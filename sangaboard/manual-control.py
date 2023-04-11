@@ -8,6 +8,10 @@ import numpy as np
 BAUD_RATE = 115200
 camera_angle = 44.5 #degrees
 
+flex_h = 80
+flex_a = 50
+flex_b = 50
+
 # find and open the arduino nano port
 arduino_port = None
 ports = list(serial.tools.list_ports.comports())
@@ -33,9 +37,10 @@ R_camera: np.ndarray = np.array(
 )
 
 # Transformation matrix converting delta into cartesian
-x_fac: float = -1 *  np.divide(2, np.sqrt(3), )
-y_fac: float = -1 
-z_fac: float = np.divide(1, 3)
+x_fac: float = -1 * np.multiply(np.divide(2, np.sqrt(3)), np.divide(flex_b, flex_h))
+y_fac: float = -1 * np.divide(flex_b, flex_h)
+z_fac: float = np.multiply(np.divide(1, 3), np.divide(flex_b, flex_a))
+
 
 Tvd: np.ndarray = np.array(
     [
@@ -55,7 +60,7 @@ while (1):
     axis = user_input[0]
     cartesian_displacement_array = np.array([
         steps if axis == "x" else 0,
-        steps if axis == "y" else 0,
+        steps if axis == "y" else 0,    
         steps if axis == "z" else 0
     ])
 
