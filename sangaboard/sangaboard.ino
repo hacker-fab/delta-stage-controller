@@ -14,7 +14,7 @@
  * 
  * Released under GPL v3, 2017
  */
-#include "InductiveSensor.h" //homemade inductive sensor library
+#include "Seeed_LDC1612.h" //homemade inductive sensor library
 #include "StepperF_alt.h"   //Fergus's hacked stepper library
 #include <assert.h>
 #include <EEPROM.h>
@@ -891,7 +891,7 @@ void loop() {
       Serial.println("--END--");
       return;
     }
-    Serial.println(F("Type 'help' for a list of commands."));
+    //Serial.println(F("Type 'help' for a list of commands."));
   }else{
     delay(1);
     return;
