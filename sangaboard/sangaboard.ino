@@ -14,6 +14,7 @@
  * 
  * Released under GPL v3, 2017
  */
+#include "InductiveSensor.h" //homemade inductive sensor library
 #include "StepperF_alt.h"   //Fergus's hacked stepper library
 #include <assert.h>
 #include <EEPROM.h>
@@ -111,11 +112,23 @@ int command_prefix(String command, const char ** prefixes, int n_prefixes){
   return -1;
 }
 
+//initialize inductive sensor:
+//IndSensor sensor1;
+LDC1612 sensor1;
 void setup() {
+  
   // initialise serial port
   Serial.begin(115200);
   while (! Serial )
     delay(1);
+  //setup inductive sensor
+  sensor1.init();
+  if (sensor1.single_channel_config(CHANNEL_0)) {
+        Serial.println("can't detect sensor!");
+        while (1);
+    }
+  Serial.println("end of the setup");
+  
   // get the stepoper objects from the motor shield objects
   #if defined(SANGABOARDv2)
     motors[0] = new Stepper(8, 13, 12, 11, 10);
@@ -813,6 +826,12 @@ void loop() {
       return;
     }
 
+    //inductive reading
+    if(command.startsWith("i?")){
+      u32 result = 0;
+      sensor1.get_channel_result(CHANNEL_0, &result);
+      Serial.println(result);
+    }
     
     if(command.startsWith("help")){
       Serial.println("");
