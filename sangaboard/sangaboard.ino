@@ -125,7 +125,8 @@ void setup() {
   sensor1.init();
   if (sensor1.single_channel_config(CHANNEL_0)) {
         Serial.println("can't detect sensor!");
-        while (1);
+        //while (1);
+        Serial.println("proceeding without inductive sensor");
     }
   Serial.println("end of the setup");
   
