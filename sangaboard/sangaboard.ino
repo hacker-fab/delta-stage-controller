@@ -113,6 +113,8 @@ int command_prefix(String command, const char ** prefixes, int n_prefixes){
 }
 
 //initialize inductive sensor:
+// connect pin 2 (white wire) on inductive sensor to pin A4 (SDA) on Arduino
+// connect pin 1 (yellow wire) on inductive sensor to pin A5 (SCL) on Arduino
 //IndSensor sensor1;
 LDC1612 sensor1;
 void setup() {
