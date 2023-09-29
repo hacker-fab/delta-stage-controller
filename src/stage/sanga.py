@@ -354,6 +354,15 @@ class SangaDeltaStage(SangaStage):
             self, delta_displacement_array, axis=None, backlash=backlash
         )
 
+    def move_rel_delta(
+        self,
+        displacement: Union[int, Tuple[int, int, int], np.ndarray]
+    ):
+        # Do the move
+        SangaStage.move_rel(
+            self, displacement, axis=None, backlash=None
+        )
+        
     def move_abs(self, final: Union[Tuple[int, int, int], np.ndarray], **kwargs):
         # Transform into camera coordinates
         camera_final_array: np.ndarray = np.dot(self.R_camera, final)

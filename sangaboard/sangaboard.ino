@@ -125,9 +125,9 @@ void setup() {
     delay(1);
   //setup inductive sensor
   sensor1.init();
-  if (sensor1.single_channel_config(CHANNEL_0)) {
+  if(sensor1.LDC1612_mutiple_channel_config())
+    {
         Serial.println("can't detect sensor!");
-        //while (1);
         Serial.println("proceeding without inductive sensor");
     }
   Serial.println("end of the setup");
@@ -830,9 +830,15 @@ void loop() {
     }
 
     //inductive reading
-    if(command.startsWith("i?")){
+    if(command.startsWith("i0?")){
       u32 result = 0;
       sensor1.get_channel_result(CHANNEL_0, &result);
+      Serial.println(result);
+    }
+    
+    if(command.startsWith("i1?")){
+      u32 result = 0;
+      sensor1.get_channel_result(CHANNEL_1, &result);
       Serial.println(result);
     }
     
