@@ -11,15 +11,13 @@ using GLMakie
 using LinearAlgebra
 using ProgressBars
 using Serialization
-using DataFrames
-using Flux
 pushfirst!(pyimport("sys")."path", "src")
 GLMakie.activate!(inline=false)
 
 
 py"""
 from stage.sanga import SangaStage, SangaDeltaStage
-ss = SangaDeltaStage(port = "/dev/ttyACM0")
+ss = SangaDeltaStage(port = "/dev/ttyACM1")
 """
 
 
@@ -37,8 +35,8 @@ display(f)
 py"""ss.move_rel_delta([-3000, -3000, -3000])"""
 py"""ss.move_rel_delta([200, 200, 200])"""
 curr_position = py"""ss.position"""
-x_sweep = curr_position[1]:5:curr_position[1] + 400
-y_sweep = curr_position[2]:5:curr_position[2] + 400
+x_sweep = curr_position[1] - 500:25:curr_position[1] + 3000
+y_sweep = curr_position[2] - 1500:25:curr_position[2] + 1500
 
 # traverse in z shape, reversing order in y
 poses = []
@@ -54,21 +52,52 @@ diffs = diff(poses, dims = 2)
 inductances_x = []
 inductances_y = []
 positions = []
-for pose in eachcol(poses)
+for pose in ProgressBar(eachcol(poses))
     # move
     py"""ss.move_abs($pose)"""
 
-    is[] = circshift(is[], (1, 0))
-    is[][1, 1] = parse(Int, py"""ss.board.query("i0?")""")
-    is[][1, 2] = parse(Int, py"""ss.board.query("i1?")""")
-    position = py"""ss.position"""
-    push!(inductances_x, is[][1, 1])
-    push!(inductances_y, is[][1, 2])
-    push!(positions, position)
-
-    notify(is)
-    println(position)
+    for i in 1:10
+        is[] = circshift(is[], (1, 0))
+        is[][1, 1] = parse(Int, py"""ss.board.query("i0?")""")
+        is[][1, 2] = parse(Int, py"""ss.board.query("i1?")""")
+        position = py"""ss.position"""
+        push!(inductances_x, is[][1, 1])
+        push!(inductances_y, is[][1, 2])
+        push!(positions, position)
+        notify(is)
+        println(position)
+    end
 end
+
+
+expfname = "zigzag2.jld2"
+open(f -> serialize(f, Dict(
+    "x_sweep" => x_sweep,
+    "y_sweep" => y_sweep,
+    "poses" => poses,
+    "inductances_x" => inductances_x, 
+    "inductances_y" => inductances_y, 
+    "positions" => positions
+    )), expfname, "w")
+
+
+positions_arr = hcat(positions...)
+
+# scatter plot all positions
+f = Figure()
+ax = Axis3(f[1, 1], aspect = :data)
+scatterlines!(ax, positions_arr[1, :], positions_arr[2, :], positions_arr[3, :], color = :blue)
+display(f)
+
+iposition_arr = hcat(inductances_x, inductances_y)'
+f = Figure()
+ax = Axis(f[1, 1])
+lines!(ax, iposition_arr[1, :], color = :blue)
+lines!(ax, iposition_arr[2, :], color = :red)
+# scatterlines!(ax, iposition_arr[1, :], iposition_arr[2, :], color = :blue)
+display(f)
+
+
 
 curr_position = py"""ss.position"""
 py"""ss.move_abs([88510, 4243, -76239])"""
