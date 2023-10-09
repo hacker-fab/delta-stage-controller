@@ -9,7 +9,7 @@ using Statistics
 using PyCall
 using GLMakie
 using LinearAlgebra
-using ProgressBars
+using ProgressMeter
 using Serialization
 pushfirst!(pyimport("sys")."path", "src")
 GLMakie.activate!(inline=false)
@@ -32,11 +32,12 @@ lines!(ax, 1:window_size, xs, color = :blue)
 lines!(ax, 1:window_size, ys, color = :red)
 display(f)
 
-py"""ss.move_rel_delta([-3000, -3000, -3000])"""
-py"""ss.move_rel_delta([200, 200, 200])"""
+
+py"""ss.move_rel_delta([3000, 3000, 3000])"""
+py"""ss.move_rel_delta([-20000, -20000,-20000])"""
 curr_position = py"""ss.position"""
-x_sweep = curr_position[1] - 500:25:curr_position[1] + 3000
-y_sweep = curr_position[2] - 1500:25:curr_position[2] + 1500
+x_sweep = curr_position[1] - 500:10:curr_position[1] + 1500
+y_sweep = curr_position[2] - 750:10:curr_position[2] + 750
 
 # traverse in z shape, reversing order in y
 poses = []
@@ -52,7 +53,7 @@ diffs = diff(poses, dims = 2)
 inductances_x = []
 inductances_y = []
 positions = []
-for pose in ProgressBar(eachcol(poses))
+@showprogress for pose in eachcol(poses)
     # move
     py"""ss.move_abs($pose)"""
 
@@ -65,12 +66,13 @@ for pose in ProgressBar(eachcol(poses))
         push!(inductances_y, is[][1, 2])
         push!(positions, position)
         notify(is)
-        println(position)
+        # println(position)
+        yield()
     end
 end
 
 
-expfname = "zigzag2.jld2"
+expfname = "zigzag3.jld2"
 open(f -> serialize(f, Dict(
     "x_sweep" => x_sweep,
     "y_sweep" => y_sweep,
@@ -80,6 +82,8 @@ open(f -> serialize(f, Dict(
     "positions" => positions
     )), expfname, "w")
 
+
+    
 
 positions_arr = hcat(positions...)
 
@@ -92,9 +96,9 @@ display(f)
 iposition_arr = hcat(inductances_x, inductances_y)'
 f = Figure()
 ax = Axis(f[1, 1])
-lines!(ax, iposition_arr[1, :], color = :blue)
-lines!(ax, iposition_arr[2, :], color = :red)
-# scatterlines!(ax, iposition_arr[1, :], iposition_arr[2, :], color = :blue)
+# lines!(ax, iposition_arr[1, :], color = :blue)
+# lines!(ax, iposition_arr[2, :], color = :red)
+scatterlines!(ax, iposition_arr[1, :], iposition_arr[2, :], color = :blue)
 display(f)
 
 
