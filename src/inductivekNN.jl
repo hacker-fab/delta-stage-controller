@@ -65,9 +65,31 @@ end
 
 
 f = Figure()
-ax = Axis(f[1, 1])
-scatter!(ax, positions_arr[1, :], positions_arr[2, :], color=:blue, label="Ground truth")
-scatter!(ax, predpositions_arr[1, :], predpositions_arr[2, :], color=:red, label="Predicted")
+ax = Axis3(f[1, 1], aspect = :data, xlabel = "x", ylabel = "y", zlabel = "z", title = "Planned Path")
+scatterlines!(ax, positions_arr[1, :], positions_arr[2, :], positions_arr[3, :], color=:blue, label="Ground truth", markersize=0.5)
+# scatter!(ax, predpositions_arr[1, :], predpositions_arr[2, :], color=:red, label="Predicted")
 display(f)
+
+f = Figure()
+ax1 = Axis(f[1, 1], title = "Planned Path")
+limits!(ax1, minimum(positions_arr[1, :]), maximum(positions_arr[1, :]), minimum(positions_arr[2, :]), maximum(positions_arr[2, :]))
+ax2 = Axis(f[1, 2], title = "Sensing Path")
+limits!(ax2, minimum(positions_arr[1, :]), maximum(positions_arr[1, :]), minimum(positions_arr[2, :]), maximum(positions_arr[2, :]))
+scatterlines!(ax1, positions_arr[1, :], positions_arr[2, :], color=:blue, label="Ground truth", markersize=0.5)
+scatterlines!(ax2, predpositions_arr[1, :], predpositions_arr[2, :], color=:blue, label="Inductance Sensed", markersize=0.5)
+display(f)
+
+f = Figure()
+ax1 = Axis(f[1, 1], title = "Sensor 1")
+ax2 = Axis(f[1, 2], title = "Sensor 2")
+lines!(ax1, iposition_arr[1, :], color = :blue)
+lines!(ax2, iposition_arr[2, :], color = :blue)
+autolimits!(ax1)
+autolimits!(ax2)
+display(f)
+
+
+
+
 
 
