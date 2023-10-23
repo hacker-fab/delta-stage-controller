@@ -1,10 +1,10 @@
 # %%
 from stage.sanga import SangaStage, SangaDeltaStage
-ss = SangaDeltaStage(port = "/dev/ttyACM1")
+ss = SangaDeltaStage(port = "/dev/ttyACM0")
 
 # %%
 # Move stepper motor directly [A, B, C] steps
-ss.move_rel_delta([200, 200, 0])
+ss.move_rel_delta([200, 0, 0])
 
 # %%
 # Move cartesian coordinate relative [X, Y, Z]

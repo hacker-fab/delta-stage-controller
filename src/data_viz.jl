@@ -17,9 +17,18 @@ GLMakie.activate!(inline=false)
 
 py"""
 from stage.sanga import SangaStage, SangaDeltaStage
-ss = SangaDeltaStage(port = "/dev/ttyACM1")
+ss = SangaDeltaStage(port = "/dev/ttyACM0")
 """
 
+py"""
+import serial
+serialPort = serial.Serial(port="/dev/ttyACM0", baudrate=115200,
+                                bytesize=8, timeout=1, stopbits=serial.STOPBITS_ONE)
+"""
+
+
+py"""serialPort.close()"""
+py"""serialPort.readline()[:-1]"""
 
 window_size = 5000
 is = Observable(zeros(window_size, 2))
@@ -31,6 +40,33 @@ ax = Axis(f[1, 1])
 lines!(ax, 1:window_size, xs, color = :blue)
 lines!(ax, 1:window_size, ys, color = :red)
 display(f)
+
+
+(parse(Int, py"""serialPort.readline()"""))
+parse(Int, py"""ss.board.query("i0?")""")
+
+inductances_x = []
+inductances_y = []
+positions = []
+while true
+    is[] = circshift(is[], (1, 0))
+    # py"""serialPort.write(bytes([ord('4')]))"""
+    try
+        is[][1, 1] = (parse(Int, py"""serialPort.readline()[:-1]"""))
+    catch
+        is[][1, 1] = is[][2, 1]
+    end
+
+    # push!(inductances_x, is[][1, 1])
+    # notify(is)
+    # println(is[][1, 1])
+    # sleep(0.01)
+    yield()
+end
+
+
+
+
 
 
 py"""ss.move_rel_delta([3000, 3000, 3000])"""
