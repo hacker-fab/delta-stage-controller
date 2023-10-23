@@ -356,7 +356,7 @@ LibSerialPort.open(portname1, baudrate) do sp1
 
         # define lyapunov function as V = 1/2 * x^T * P * x
         # state cost for lyapunov function
-        Q = Diagonal([0.4, 0.4, 0.4]) # position cost is 100 times velocity cost
+        Q = Diagonal([0.1, 0.1, 0.1]) # position cost is 100 times velocity cost
         ## Solve the P matrix, which is the solution to the Lyapunov equation:
         ## A^T * P + P * A = -Q
         P = lyap(A_m', -Q)
@@ -364,8 +364,8 @@ LibSerialPort.open(portname1, baudrate) do sp1
         # learning rate for weight update
         Γ_x = 1
         Γ_r = 1
-        Γ_w = 0.1
-        Γ_V = 0.1
+        Γ_w = 1
+        Γ_V = 1
         Γ_θ = 1
         Γ_σ = 0.0 # sigma modification to add damping
 
@@ -394,8 +394,8 @@ LibSerialPort.open(portname1, baudrate) do sp1
         ## u_n = K_x' * x_n + K_r' * r_n + W' * phi(x_n)
         K_x = zeros(3, 3)
         K_r = zeros(3, 3)
-        W = zeros(feature_size, 3)
-        V = zeros(10, feature_size)
+        W = Flux.glorot_uniform(feature_size, 3)
+        V = Flux.glorot_uniform(10, feature_size)
         Θ = zeros(feature_size, 3)
 
         # target joint state
@@ -510,8 +510,8 @@ LibSerialPort.open(portname1, baudrate) do sp1
                     else
                         Γ_x = 1
                         Γ_r = 1
-                        Γ_w = 0.1
-                        Γ_V = 0.1
+                        Γ_w = 1
+                        Γ_V = 1
                         vel .= u_n_
                     end
                 else
@@ -559,13 +559,11 @@ LibSerialPort.open(portname1, baudrate) do sp1
                     if i < 4
                         pos, vel, acc = traj(time_ns(), t_start, i % 3 + 1)
                         x_m_track[1:end] = is[][1, 1:2:end]
-                        x_m_track[1] += 0.023
+                        x_m_track = [0.12, -0.01, 0.04]
                     else
-                        Γ_x = 1
-                        Γ_r = 1
-                        Γ_w = 0.01
-                        Γ_V = 0.01
-                        vel .= u_m
+                        vel .= u_n_
+                        Γ_w = 1
+                        Γ_V = 1
                     end
                 end
             end
