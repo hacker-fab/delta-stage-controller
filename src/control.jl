@@ -28,6 +28,28 @@ function joint_vel_pwm(joint_vel, dt)
     return round(Int, cps / joint_vel)
 end
 
+function send_recieve_serial!(data, sp1, sp2, vel, x0, dt)
+    write(sp1, "x\n")
+    write(sp2, "mr $(joint_vel_pwm(vel[1], dt)) $(joint_vel_pwm(vel[2], dt)) $(joint_vel_pwm(vel[3], dt))\n")
+    while bytesavailable(sp1) < 1
+    end
+    try
+        sp1_data = String(readline(sp1, keep=false))
+        sp1_reading = split(sp1_data, ',')
+        data[1] = ((parse(Int, sp1_reading[1])) - x0[1]) * 1.0e-7
+        data[3] = ((parse(Int, sp1_reading[2])) - x0[3]) * 1.0e-7
+    catch
+    end
+    while bytesavailable(sp2) < 1
+    end
+    try
+        sp2_reading = ((parse(Int, String(readline(sp2, keep=false)))) - x0[5]) * 1.0e-7
+        data[5] = sp2_reading
+    catch
+    end
+    return data
+end
+
 dt = -1
 x0 = zeros(6)
 LibSerialPort.open(portname1, baudrate) do sp1
@@ -36,35 +58,15 @@ LibSerialPort.open(portname1, baudrate) do sp1
         samples = 100
         global x0
         global dt
-
         for i in 1:samples
-            # measure dt
-            write(sp1, "mr 10000000000000 10000000000000 10000000000000\n")
-            write(sp2, "mr 10000000000000 10000000000000 10000000000000\n")
-            while bytesavailable(sp1) < 1
-            end
-            try
-                sp1_data = String(readline(sp1, keep=false))
-                ind0, ind1 = split(sp1_data, ',')
-                x0[1] = (parse(Int, ind0))
-                x0[3] = (parse(Int, ind1))
-                print((parse(Int, ind0)) - x00)
-            catch
-            end
-            while bytesavailable(sp2) < 1
-            end
-            try
-                x0[5] = (parse(Int, String(readline(sp2, keep=false))))
-            catch
-            end
+            send_recieve_serial!(x0, sp1, sp2, [0, 0, 0], zeros(6), dt)
         end
         dt = (time_ns() - start_t) / samples / 1e9
     end
 end
 
-
-
-window_size = 6000
+window_size = 1000
+# state, [x, ẋ, y, ẏ, z, ż]
 is = Observable(zeros(window_size, 6))
 xs = @lift($is[:, 1])
 ẋs = @lift($is[:, 2])
@@ -73,267 +75,138 @@ ẏs = @lift($is[:, 4])
 zs = @lift($is[:, 5])
 żs = @lift($is[:, 6])
 
-# control input, [A, Ȧ, B, Ḃ, C, Ċ]
-us = Observable(zeros(window_size, 6))
-uA = @lift($us[:, 1])
-uȦ = @lift($us[:, 2])
-uB = @lift($us[:, 3])
-uḂ = @lift($us[:, 4])
-uC = @lift($us[:, 5])
-uĊ = @lift($us[:, 6])
+# error p, i, d, [xd, xp, xi, yd, yp, yi, zd, zp, zi]
+es = Observable(zeros(window_size, 9))
+exds = @lift($es[:, 1])
+exps = @lift($es[:, 2])
+exis = @lift($es[:, 3])
+eyds = @lift($es[:, 4])
+eyps = @lift($es[:, 5])
+eyis = @lift($es[:, 6])
+ezds = @lift($es[:, 7])
+ezps = @lift($es[:, 8])
+ezis = @lift($es[:, 9])
 
-# adaptive
-x_n_log = Observable(zeros(window_size, 6))
-u_n_log = Observable(zeros(window_size, 3))
-e_log = Observable(zeros(window_size, 6))
-x_n_log_x = @lift($x_n_log[:, 1])
-x_n_log_y = @lift($x_n_log[:, 3])
-x_n_log_z = @lift($x_n_log[:, 5])
-u_n_log_A = @lift($u_n_log[:, 1])
-u_n_log_B = @lift($u_n_log[:, 2])
-u_n_log_C = @lift($u_n_log[:, 3])
-e_log_x = @lift($e_log[:, 1])
-e_log_y = @lift($e_log[:, 3])
-e_log_z = @lift($e_log[:, 5])
-nn_loss = Observable(zeros(window_size))
+# reference control input, [ẋ, ẏ, ż]
+us = Observable(zeros(window_size, 3))
+ẋs = @lift($us[:, 1])
+ẏs = @lift($us[:, 2])
+żs = @lift($us[:, 3])
+
+# stepper motor control input, [uA, uB, uC]
+ps = Observable(zeros(window_size, 3))
+uA = @lift($ps[:, 1])
+uB = @lift($ps[:, 2])
+uC = @lift($ps[:, 3])
+
+# RMAC stats
+x_n = Observable(zeros(window_size, 3))
+x_n_x = @lift($x_n[:, 1])
+x_n_y = @lift($x_n[:, 2])
+x_n_z = @lift($x_n[:, 3])
+
+u_ad = Observable(zeros(window_size, 3))
+u_ad_x = @lift($u_ad[:, 1])
+u_ad_y = @lift($u_ad[:, 2])
+u_ad_z = @lift($u_ad[:, 3])
+
+e_ad = Observable(zeros(window_size, 3))
+e_ad_x = @lift($e_ad[:, 1])
+e_ad_y = @lift($e_ad[:, 2])
+e_ad_z = @lift($e_ad[:, 3])
 
 f = Figure()
-axx = Axis(f[1, 1], xlabel="x")
+axx = Axis(f[1, 1], xlabel="Stage Pos")
 lines!(axx, 1:window_size, xs, color=:blue)
 lines!(axx, 1:window_size, ys, color=:red)
 lines!(axx, 1:window_size, zs, color=:black)
-axẋ = Axis(f[1, 2], xlabel="ẋ")
-lines!(axẋ, 1:window_size, ẋs, color=:blue)
-lines!(axẋ, 1:window_size, ẏs, color=:red)
-lines!(axẋ, 1:window_size, żs, color=:black)
-axu = Axis(f[2, 1], xlabel="u")
-lines!(axu, 1:window_size, uA, color=:blue)
-lines!(axu, 1:window_size, uB, color=:red)
-lines!(axu, 1:window_size, uC, color=:black)
-axu̇ = Axis(f[2, 2], xlabel="u̇")
-lines!(axu̇, 1:window_size, uȦ, color=:blue)
-lines!(axu̇, 1:window_size, uḂ, color=:red)
-lines!(axu̇, 1:window_size, uĊ, color=:black)
-axadapt_x = Axis(f[3, 1], xlabel="x_n")
-lines!(axadapt_x, 1:window_size, x_n_log_x, color=:blue)
-lines!(axadapt_x, 1:window_size, x_n_log_y, color=:red)
-lines!(axadapt_x, 1:window_size, x_n_log_z, color=:black)
-axadapt_u = Axis(f[3, 2], xlabel="u_n")
-lines!(axadapt_u, 1:window_size, u_n_log_A, color=:blue)
-lines!(axadapt_u, 1:window_size, u_n_log_B, color=:red)
-lines!(axadapt_u, 1:window_size, u_n_log_C, color=:black)
+axx = Axis(f[1, 2], xlabel="Stage Vel")
+lines!(axx, 1:window_size, ẋs, color=:blue)
+lines!(axx, 1:window_size, ẏs, color=:red)
+lines!(axx, 1:window_size, żs, color=:black)
+axu = Axis(f[2, 1], xlabel="Ref u")
+lines!(axu, 1:window_size, ẋs, color=:blue)
+lines!(axu, 1:window_size, ẏs, color=:red)
+lines!(axu, 1:window_size, żs, color=:black)
+axu̇ = Axis(f[2, 2], xlabel="Stepper u")
+lines!(axu̇, 1:window_size, uA, color=:blue)
+lines!(axu̇, 1:window_size, uB, color=:red)
+lines!(axu̇, 1:window_size, uC, color=:black)
+axadapt_x = Axis(f[3, 1], xlabel="RMAC x_n")
+lines!(axadapt_x, 1:window_size, x_n_x, color=:blue)
+lines!(axadapt_x, 1:window_size, x_n_y, color=:red)
+lines!(axadapt_x, 1:window_size, x_n_z, color=:black)
+axadapt_x = Axis(f[3, 2], xlabel="RMAC u_ad")
+lines!(axadapt_x, 1:window_size, u_ad_x, color=:blue)
+lines!(axadapt_x, 1:window_size, u_ad_y, color=:red)
+lines!(axadapt_x, 1:window_size, u_ad_z, color=:black)
 axadapt_e = Axis(f[4, 1], xlabel="e")
-lines!(axadapt_e, 1:window_size, e_log_x, color=:blue)
-lines!(axadapt_e, 1:window_size, e_log_y, color=:red)
-lines!(axadapt_e, 1:window_size, e_log_z, color=:black)
-axadapt_nn = Axis(f[4, 2], xlabel="nn_loss")
-lines!(axadapt_nn, 1:window_size, nn_loss, color=:blue)
+lines!(axadapt_e, 1:window_size, exps, color=:blue)
+lines!(axadapt_e, 1:window_size, eyps, color=:red)
+lines!(axadapt_e, 1:window_size, ezps, color=:black)
+axadapt_nn = Axis(f[4, 2], xlabel="adaptation_loss")
+lines!(axadapt_nn, 1:window_size, e_ad_x, color=:blue)
+lines!(axadapt_nn, 1:window_size, e_ad_y, color=:red)
+lines!(axadapt_nn, 1:window_size, e_ad_z, color=:black)
 display(f)
 
-# 0,1:B 2,3:C 4,5:A
-
-# Refernce state transition
-A = [1 dt 0 0 0 0
+# Stage state transition
+A_s = [1 dt 0 0 0 0
     0 1 0 0 0 0
     0 0 1 dt 0 0
     0 0 0 1 0 0
     0 0 0 0 1 dt
     0 0 0 0 0 1]
-# Refernce control input
-B = [0.5*dt^2 0 0
+# Stage control input
+B_s = [0.5*dt^2 0 0
     dt 0 0
     0 0.5*dt^2 0
     0 dt 0
     0 0 0.5*dt^2
     0 0 dt]
-C = [1.0 0 0 0 0 0
+# Stage Observer state transition
+C_s = [1.0 0 0 0 0 0
     0 0 1.0 0 0 0
     0 0 0 0 1.0 0]
-D = [0.0 0 0
-    0 0 0
-    0 0 0]
+# Stage Observer control input
+D_s = [1.0 0 0
+    0 1.0 0
+    0 0 1.0]
 
 dw = MvNormal(6, 1.0)          # Dynamics noise Distribution
 de = MvNormal(3, 1.0)          # Measurement noise Distribution
-d0 = MvNormal(6, 1.0)   # Initial state Distribution
-kf = KalmanFilter(A, B, C, D, cov(dw), cov(de), d0)
+d0 = MvNormal(x0, 1.0)   # Initial state Distribution
+kf = KalmanFilter(A_s, B_s, C_s, D_s, cov(dw), cov(de), d0)
 
-MvNormal([1, 1, 1], 1.0)
+# Refernce state transition
+A_m = [1.0 0 0
+    0 1.0 0
+    0 0 1.0]
+# Refernce control input
+B_m = [dt 0 0
+    0 dt 0
+    0 0 dt]
+# Refernce Observer state transition
+C_m = [1.0 0 0
+    0 1.0 0
+    0 0 1.0]
+# Refernce Observer control input
+D_m = [0.0 0 0
+    0 0 0
+    0 0 0]
 
-# define trajectory, accelerating to 0.1 from t = 1 to t = 2, then decelerating to 0 from t = 3 to t = 4
-traj_(t, start_t, axis) = begin
-    t_, start_t_ = t / 1e9, start_t / 1e9
-    # returns acceleraation u and command velocity
-    a, b, c, d, e, f, g, h, i = 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0
-    target_vel = -5
-    pos, vel, acc = [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]
-    if t_ - start_t_ > 0.0
-    end
-    if t_ - start_t_ > a
-        # ramp up
-        acc[axis] = target_vel / b
-        pos[axis] += 0.5 * acc[axis] * (t_ - (start_t_ + a))^2
-        vel[axis] += acc[axis] * (t_ - (start_t_ + a))
-    end
-    if t_ - start_t_ > a + b
-        # constant velocity
-        acc[axis] = 0.0
-        pos[axis] += target_vel * (t_ - (start_t_ + a + b))
-        vel[axis] = target_vel
-    end
-    if t_ - start_t_ > a + b + c
-        # ramp down
-        acc[axis] = -target_vel / d
-        pos[axis] += target_vel * (t_ - (start_t_ + a + b + c)) + 0.5 * acc[axis] * (t_ - (start_t_ + a + b + c))^2
-        vel[axis] += acc[axis] * (t_ - (start_t_ + a + b + c))
-    end
-    if t_ - start_t_ > a + b + c + d
-        # stop
-        acc[axis] = 0.0
-        pos[axis] += 0.0
-        vel[axis] = 0.0
-    end
-    if t_ - start_t_ > a + b + c + d + e
-        # ramp up reverse
-        acc[axis] = -target_vel / f
-        pos[axis] += 0.5 * acc[axis] * (t_ - (start_t_ + a + b + c + d + e))^2
-        vel[axis] += acc[axis] * (t_ - (start_t_ + a + b + c + d + e))
-    end
-    if t_ - start_t_ > a + b + c + d + e + f
-        # constant velocity reverse
-        acc[axis] = 0.0
-        pos[axis] += -target_vel * (t_ - (start_t_ + a + b + c + d + e + f))
-        vel[axis] = -target_vel
-    end
-    if t_ - start_t_ > a + b + c + d + e + f + g
-        # ramp down reverse
-        acc[axis] = target_vel / h
-        pos[axis] += -target_vel * (t_ - (start_t_ + a + b + c + d + e + f + g)) + 0.5 * acc[axis] * (t_ - (start_t_ + a + b + c + d + e + f + g))^2
-        vel[axis] += acc[axis] * (t_ - (start_t_ + a + b + c + d + e + f + g))
-    end
-    if t_ - start_t_ > a + b + c + d + e + f + g + h
-        # stop
-        acc[axis] = 0.0
-        pos[axis] += 0.0
-        vel[axis] = 0.0
-    end
-    if t_ - start_t_ > a + b + c + d + e + f + g + h + i
-        return nothing, nothing, nothing
-    end
-    return pos, vel, acc
-end
-
-traj(t, start_t, axis) = begin
-    # track sine wave velocity, 0.5 Hz
-    t_, start_t_ = t / 1e9, start_t / 1e9
-    # returns acceleraation u and command velocity
-    acc = [0.0, 0.0, 0.0]
-    pos = [0.0, 0.0, 0.0]
-    vel = [0.0, 0.0, 0.0]
-
-    mag = 4
-    freq = 0.2
-    vel[axis] = mag * sin(2 * pi * freq * (t_ - start_t_))
-    acc[axis] = mag * 2 * pi * freq * cos(2 * pi * freq * (t_ - start_t_))
-    pos[axis] = mag / (2 * pi * freq) * cos(2 * pi * freq * (t_ - start_t_))
-    if t_ - start_t_ > 5
-        vel[axis] = 0.0
-        acc[axis] = 0.0
-    end
-    if t_ - start_t_ > 6.5
-        return nothing, nothing, nothing
-    end
-    return pos, vel, acc
-end
-
-
-# LibSerialPort.open(portname1, baudrate) do sp1
-#     LibSerialPort.open(portname2, baudrate) do sp2
-#         global W, V, K_x, K_r, x_n, u_n, x_m, Λ, A_n, B_n, dt, Γ_x, Γ_r, Γ_w, Γ_V, Γ_σ, P, A_m, B_m, x0, is, us, x_n_log, u_n_log, e_log, Θ, ϕ, opt_state, x_m_track, u_m
-#         while bytesavailable(sp1) > 0
-#             read(sp1)
-#         end
-#         while bytesavailable(sp2) > 0
-#             read(sp2)
-#         end
-
-#         vel = [0.0, 0.0, 0.0]
-#         acc = [0.0, 0.0, 0.0]
-#         init = true
-#         target_state = nothing
-#         while true
-#             if init
-#                 write(sp1, "mr 10000000000000 10000000000000 10000000000000\n")
-#                 write(sp2, "mr 10000000000000 10000000000000 10000000000000\n")
-#             end
-#             is[] = circshift(is[], (1, 0))
-#             is[][1, 1] = is[][2, 1]
-#             is[][1, 2] = is[][2, 2]
-
-#             while bytesavailable(sp1) < 1
-#             end
-#             try
-#                 sp1_data = String(readline(sp1, keep=false))
-#                 ind0, ind1 = split(sp1_data, ',')
-#                 is[][1, 1] = ((parse(Int, ind0)) - x0[1]) * 1.0e-7
-#                 is[][1, 3] = ((parse(Int, ind1)) - x0[3]) * 1.0e-7
-#             catch
-#             end
-#             while bytesavailable(sp2) < 1
-#             end
-#             try
-#                 is[][1, 5] = ((parse(Int, String(readline(sp2, keep=false)))) - x0[5]) * 1.0e-7
-#             catch
-#             end
-
-#             kf([0, 0, 0], [is[][1, 1], is[][1, 3], is[][1, 5]])
-#             is[][1, 1] = state(kf)[1]
-#             is[][1, 2] = state(kf)[2]
-#             is[][1, 3] = state(kf)[3]
-#             is[][1, 4] = state(kf)[4]
-#             is[][1, 5] = state(kf)[5]
-#             is[][1, 6] = state(kf)[6]
-#             notify(is)
-#             us[] = circshift(us[], (1, 0))
-#             us[][1, 1] = vel[1]
-#             us[][1, 2] = acc[1]
-#             us[][1, 3] = vel[2]
-#             us[][1, 4] = acc[2]
-#             us[][1, 5] = vel[3]
-#             us[][1, 6] = acc[3]
-#             notify(us)
-#             yield()
-
-#             if init
-#                 init = false
-#                 target_state = is[][1, :]
-#             end
-
-#             vel .= 1000 * (is[][1, :] .- target_state)[[1, 3, 5]]
-#             e_log[] = circshift(e_log[], (1, 0))
-#             e_log[][1, :] = (is[][1, :] .- target_state)
-#             notify(e_log)
-
-#             sp1_cmd = "x\n"
-#             sp2_cmd = "mr $(joint_vel_pwm(vel[1], dt)) $(joint_vel_pwm(vel[2], dt)) $(joint_vel_pwm(vel[3], dt))\n"
-#             write(sp1, sp1_cmd)
-#             write(sp2, sp2_cmd)
-#         end
-
-#     end
-# end
-
-
+# Stepper state transition
+A_n = [1.0 0 0
+    0 1.0 0
+    0 0 1.0]
+# Stepper control input
+B_n = [dt 0 0
+    0 dt 0
+    0 0 dt]
 
 LibSerialPort.open(portname1, baudrate) do sp1
     LibSerialPort.open(portname2, baudrate) do sp2
-        global W, V, K_x, K_r, x_n, u_n, x_m, Λ, A_n, B_n, dt, Γ_x, Γ_r, Γ_w, Γ_V, Γ_σ, P, A_m, B_m, x0, is, us, x_n_log, u_n_log, e_log, Θ, ϕ, opt_state, x_m_track, u_m
-        while bytesavailable(sp1) > 0
-            read(sp1)
-        end
-        while bytesavailable(sp2) > 0
-            read(sp2)
-        end
+        global W, V, K_x, K_r, x_n, u_n, x_m, Λ, A_n, B_n, dt, Γ_x, Γ_r, Γ_w, Γ_V, Γ_σ, P, A_m, B_m, x0, is, us, x_n_log, u_n_log, e_log, Θ, ϕ, opt_state, x_m_track, u_m, kf, ekf, es, ps, feat
 
         # Implements Model-Refernce Adaptive Control (MRAC) using 
         # a linear reference model in the joint space
@@ -344,21 +217,13 @@ LibSerialPort.open(portname1, baudrate) do sp1
 
         # Refernce model in joint space theta (ẋ_m = Am xm + Bm um)
         # this is from the inductance sensor output
-        x_m = zeros(3) # current state, [position A, velocity A, position B, velocity B, position C, velocity C]
-        # Refernce state transition
-        A_m = [1.0 0 0
-            0 1.0 0
-            0 0 1.0]
-        # Refernce control input
-        B_m = [dt 0 0
-            0 dt 0
-            0 0 dt]
+        x_m = zeros(3) # current state, [position, velocity, position, velocity, position, velocity]
 
         # define lyapunov function as V = 1/2 * x^T * P * x
         # state cost for lyapunov function
         Q = Diagonal([0.1, 0.1, 0.1]) # position cost is 100 times velocity cost
-        ## Solve the P matrix, which is the solution to the Lyapunov equation:
-        ## A^T * P + P * A = -Q
+        # Solve the P matrix, which is the solution to the Lyapunov equation:
+        # A^T * P + P * A = -Q
         P = lyap(A_m', -Q)
 
         # learning rate for weight update
@@ -366,44 +231,24 @@ LibSerialPort.open(portname1, baudrate) do sp1
         Γ_r = 1
         Γ_w = 1
         Γ_V = 1
-        Γ_θ = 1
         Γ_σ = 0.0 # sigma modification to add damping
-
-        # ϕ(x) = σ(V^T * x)
-        feature_size = 16
-        ϕ = Chain(Dense(10, feature_size, σ), Dense(feature_size, feature_size, σ))
-        opt_state = Flux.setup(Adam(0.1), ϕ)
-
-        # initial parameters
 
         # Adaptive parameters
         ## Nominal stepper linear model ẋ = A_n x_n + B_n Λ (u_n - f(x))
-        ## KNOWN measured state
-        x_n = zeros(3) # current state, [position A, velocity A, position B, velocity B, position C, velocity C]
-        u_n = zeros(3) # current control input, [pwm A, pwm B, pwm C]
-        Λ = Diagonal([1, 1, 1]) # check p80
-        ## UNKNOWN state transition
-        A_n = [1.0 0 0
-            0 1.0 0
-            0 0 1.0]
-        ## UNKNOWN control input
-        B_n = [dt 0 0
-            0 dt 0
-            0 0 dt]
+        Λ = Diagonal([1, 1, 1]) # signs, check p80
+
         ## UNKNOWN gains of nominal u_n
-        ## u_n = K_x' * x_n + K_r' * r_n + W' * phi(x_n)
+        ## u_n = K_x' * x_n + K_r' * r_n + W' * ϕ(x_n)
+        ## where ϕ(x) = σ(V^T * x) is a single-layer neural network
+        feature_size = 16
         K_x = zeros(3, 3)
         K_r = zeros(3, 3)
         W = Flux.glorot_uniform(feature_size, 3)
         V = Flux.glorot_uniform(10, feature_size)
-        Θ = zeros(feature_size, 3)
 
-        # target joint state
-        x_m = copy(x_n)
-        x_m_track = copy(x_n)
-        # x_m_track[1] += 0.002 * 1.0e7
+        # target joint state and control
+        x_m_track = copy(x0[1:2:end])
         x_m_track[1:end] .= 0.0
-        u_m = zeros(3)
 
         for i = 1:100
             t_prev = Int64(time_ns())
@@ -412,160 +257,92 @@ LibSerialPort.open(portname1, baudrate) do sp1
             loopcnt = 0
             while true
                 loopcnt += 1
-                if isnothing(vel)
-                    break
-                end
-                sp1_cmd = "x\n"
-                sp2_cmd = "mr $(joint_vel_pwm(vel[1], dt)) $(joint_vel_pwm(vel[2], dt)) $(joint_vel_pwm(vel[3], dt))\n"
-                write(sp1, sp1_cmd)
-                write(sp2, sp2_cmd)
 
+                # send command + new state
                 is[] = circshift(is[], (1, 0))
-                is[][1, 1] = is[][2, 1]
-                is[][1, 2] = is[][2, 2]
+                is[][1, :] = send_recieve_serial!(is[][2, :], sp1, sp2, ps[][1, :], x0, dt)
+                kf(us[][1, :], is[][1, 1:2:end])
+                is[][1, :] = state(kf)
 
-                while bytesavailable(sp1) < 1
-                end
-                try
-                    sp1_data = String(readline(sp1, keep=false))
-                    ind0, ind1 = split(sp1_data, ',')
-                    is[][1, 1] = ((parse(Int, ind0)) - x0[1]) * 1.0e-7
-                    is[][1, 3] = ((parse(Int, ind1)) - x0[3]) * 1.0e-7
-                catch
-                end
-                while bytesavailable(sp2) < 1
-                end
-                try
-                    is[][1, 5] = ((parse(Int, String(readline(sp2, keep=false)))) - x0[5]) * 1.0e-7
-                catch
-                end
+                # x_n
+                feat = [is[][2, :]; ps[][2, :]; 1] # use previous state because the adaptation trains on the previous state
+                x_n[] = circshift(x_n[], (1, 0))
+                x_n[][1, :] = A_n * is[][2, 1:2:end] + B_n * Λ * (ps[][2, :] - W' * sigmoid(V' * feat))
 
-                kf([0, 0, 0], [is[][1, 1], is[][1, 3], is[][1, 5]])
-                is[][1, 1] = state(kf)[1]
-                is[][1, 2] = state(kf)[2]
-                is[][1, 3] = state(kf)[3]
-                is[][1, 4] = state(kf)[4]
-                is[][1, 5] = state(kf)[5]
-                is[][1, 6] = state(kf)[6]
-                notify(is)
+                # adaptation
+                # using previous is, ps because they were update above
+                # using current x_n, es because they were calculated from previous is, ps
+                x_m = A_m * is[][1, 1:2:end] + B_m * us[][1, :]
+                e = x_n[][1, :] - x_m
+                K̇_x = -Γ_x * (is[][1, 1:2:end] * e' * P * B_n * Λ+ Γ_σ * K_x)
+                K̇_r = -Γ_r * (us[][1, :] * e' * P * B_n * Λ + Γ_σ * K_r)
+                Ẇ = Γ_w * ((sigmoid(V' * feat) - ForwardDiff.jacobian(sigmoid, V' * feat) * (V' * feat)) * e' * P * B_n * Λ + Γ_σ * W)
+                V̇ = Γ_V * (feat * e' * P * B_n * Λ * W' * ForwardDiff.jacobian(sigmoid, V' * feat) + Γ_σ * V)
+
+                K_x += K̇_x
+                K_r += K̇_r
+                W += Ẇ
+                V += V̇
+
+                # adaptive stats
+                u_ad[] = circshift(u_ad[], (1, 0))
+                u_ad[][1, :] = W' * sigmoid(V' * feat)
+
+                x_n_ad = A_n * is[][2, 1:2:end] + B_n * Λ * (ps[][2, :] - W' * sigmoid(V' * feat))
+                e_ad[] = circshift(e_ad[], (1, 0))
+                e_ad[][1, :] = e
+
+                # tracking error
+                es[] = circshift(es[], (1, 0))
+                # Proporional tracking error
+                es[][1, 2:3:end] = is[][1, 1:2:end] .- x_m_track
+                # Integral tracking error
+                es[][1, 3:3:end] = es[][2, 3:3:end] .+ es[][1, 2:3:end] * dt
+                # Derivative tracking error
+                es[][1, 1:3:end] = (es[][1, 2:3:end] .- es[][2, 2:3:end]) / dt
+
+                # reference control (pi controller)
+                kp, ki, kd = 1000, 10, 0.0
                 us[] = circshift(us[], (1, 0))
-                us[][1, 1] = vel[1]
-                us[][1, 2] = acc[1]
-                us[][1, 3] = vel[2]
-                us[][1, 4] = acc[2]
-                us[][1, 5] = vel[3]
-                us[][1, 6] = acc[3]
-                notify(us)
-                yield()
+                us[][1, :] = kp * es[][1, 2:3:end] + ki * es[][1, 3:3:end] + kd * es[][1, 1:3:end]
 
-                # Loop
-                if false
-                    # training mode
-                    u_n = [vel[1], vel[2], vel[3]]
-                    feat = [is[][1, :]; u_n; 1]
-                    # training
-                    grads = Flux.gradient(ϕ) do m
-                        result = m(feat)
-                        sum(((A_n * x_n + B_n * Λ * (u_n - Θ' * result)) .- x_m) .^ 2)
+                # override x_n with observation
+                x_n[][1, :] = is[][1, 1:2:end]
+
+                # next iter params
+                if i < 5
+                    # track trajectory
+                    pos, vel, acc = traj(time_ns(), t_start, i % 3 + 1)
+                    if any(isnothing.(vel))
+                        break
                     end
-                    Flux.update!(opt_state, ϕ, grads[1])
 
-                    # update
-                    x_n_old = copy(x_n)
-                    x_n = A_n * x_n + B_n * Λ * (u_n - Θ' * ϕ(feat))
-                    x_m = is[][1, 1:2:end]
+                    ps[] = circshift(ps[], (1, 0))
+                    ps[][1, :] .= vel
 
-                    e = x_n - x_m
-                    K̇_x = -Γ_x * (x_n * e' * P * B_n * Λ + Γ_σ * K_x)
-                    K̇_r = -Γ_r * (u_n * e' * P * B_n * Λ + Γ_σ * K_r)
-                    Θ̇ = -Γ_θ * (ϕ(feat) * e' * P * B_n * Λ + Γ_σ * Θ)
-
-                    K_x += K̇_x * dt
-                    K_r += K̇_r * dt
-                    Θ += Θ̇ * dt
-
-                    # nominal control input
-                    u_m = 1000 * (is[][1, 1:2:end].-x_m_track)
-                    u_n_ = K_x' * x_n + K_r' * u_m + Θ' * ϕ(feat)
-                    x_n_ = A_n * x_n + B_n * Λ * (u_n - Θ' * ϕ(feat))
-
-                    x_n = copy(x_m)
-
-                    x_n_log[] = circshift(x_n_log[], (1, 0))
-                    u_n_log[] = circshift(u_n_log[], (1, 0))
-                    e_log[] = circshift(e_log[], (1, 0))
-                    nn_loss[] = circshift(nn_loss[], (1))
-                    x_n_log[][1, 1:2:end] = x_n_
-                    u_n_log[][1, :] = u_n_
-                    e_log[][1, 1:2:end] = e
-                    nn_loss[][1] = sum(((A_n * x_n + B_n * Λ * (u_n - Θ' * ϕ(feat))) .- x_m) .^ 2)
-                    notify(x_n_log)
-                    notify(u_n_log)
-                    notify(e_log)
-
-                    if i < 10
-                        pos, vel, acc = traj(time_ns(), t_start, i % 3 + 1)
-                        x_m_track[1:end] = is[][1, 1:2:end]
-                        x_m_track[1] += 0.023
-                    else
-                        Γ_x = 1
-                        Γ_r = 1
-                        Γ_w = 1
-                        Γ_V = 1
-                        vel .= u_n_
-                    end
+                    x_m_track = is[][1, 1:2:end]
+                    x_m_track[1] += 0.008
+                    # es[][:, 1:3:end] .= 0.0 # reset integral error
+                # x_m_track = [0.12, -0.01, 0.04]
                 else
-                    # switch to tracking mode
-                    # update
-                    u_n = [vel[1], vel[2], vel[3]]
-                    feat = [is[][1, :]; u_n; 1]
-                    x_n_old = copy(x_n)
-                    x_n = A_n * x_n + B_n * Λ * (u_n - W' * sigmoid(V' * feat))
-                    x_m = is[][1, 1:2:end]
-                    e = x_n - x_m
+                    # track point
+                    Γ_w = 1
+                    Γ_V = 1
 
-                    K̇_x = Γ_x * (x_n * e' * P * B_n + Γ_σ * K_x)
-                    K̇_r = Γ_r * (u_n * e' * P * B_n + Γ_σ * K_r)
-                    Ẇ = Γ_w * ((sigmoid(V' * feat) - ForwardDiff.jacobian(sigmoid, V' * feat) * (V' * feat)) * e' * P * B_n + Γ_σ * W)
-                    V̇ = Γ_V * (feat * e' * P * B_n * W' * ForwardDiff.jacobian(sigmoid, V' * feat) + Γ_σ * V)
-
-                    K_x += K̇_x
-                    K_r += K̇_r
-                    W += Ẇ
-                    V += V̇
-
-                    x_n = copy(x_m)
-
-
-                    # nominal control input
-                    u_m = 1000 * (is[][1, 1:2:end].-x_m_track)
-                    u_n_ = K_x' * x_n + K_r' * u_m + W' * sigmoid(V' * feat)
-                    # nominal state
-                    u_ad = W' * sigmoid(V' * feat)
-                    x_n_ = A_n * x_n + B_n * Λ * (u_n - u_ad)
-
-                    x_n_log[] = circshift(x_n_log[], (1, 0))
-                    u_n_log[] = circshift(u_n_log[], (1, 0))
-                    e_log[] = circshift(e_log[], (1, 0))
-                    nn_loss[] = circshift(nn_loss[], (1))
-                    x_n_log[][1, 1:2:end] = x_n
-                    u_n_log[][1, :] = W' * sigmoid(V' * feat)
-                    e_log[][1, 1:2:end] =  (is[][1, 1:2:end].-x_m_track)
-                    nn_loss[][1] =
-                        notify(x_n_log)
-                    notify(u_n_log)
-                    notify(e_log)
-
-                    if i < 4
-                        pos, vel, acc = traj(time_ns(), t_start, i % 3 + 1)
-                        x_m_track[1:end] = is[][1, 1:2:end]
-                        x_m_track = [0.12, -0.01, 0.04]
-                    else
-                        vel .= u_n_
-                        Γ_w = 1
-                        Γ_V = 1
-                    end
+                    ps[] = circshift(ps[], (1, 0))
+                    ps[][1, :] = K_x' * x_n[][1, :] + K_r' * us[][2, :] + W' * sigmoid(V' * feat)
+                    # ps[][1, :] = us[][1, :]
                 end
+
+                # update makie
+                notify(is)
+                notify(es)
+                notify(us)
+                notify(ps)
+                notify(x_n)
+                notify(u_ad)
+                notify(e_ad)
+                yield()
             end
             dt = (Int64(time_ns()) - t_prev) / 1e9 / loopcnt
             write(sp2, "mr 10000000000000 10000000000000 10000000000000\n")
@@ -573,8 +350,41 @@ LibSerialPort.open(portname1, baudrate) do sp1
     end
 end
 
+LibSerialPort.open(portname2, baudrate) do sp2
+    write(sp2, "mr 100000000000000 100000000000000 100000000000000\n")
+end
 
 
+
+e = x_n[][2, :] - is[][2, 1:2:end]
+K̇_x = -Γ_x * (x_n[][1, :] * e' * P * B_n * Λ+ Γ_σ * K_x)
+K̇_r = -Γ_r * (ps[][1, :] * e' * P * B_n * Λ + Γ_σ * K_r)
+Ẇ = Γ_w * ((sigmoid(V' * feat) - ForwardDiff.jacobian(sigmoid, V' * feat) * (V' * feat)) * e' * P * B_n * Λ + Γ_σ * W)
+V̇ = Γ_V * (feat * e' * P * B_n * Λ * W' * ForwardDiff.jacobian(sigmoid, V' * feat) + Γ_σ * V)
+
+K_x += K̇_x
+K_r += K̇_r
+W += Ẇ
+V += V̇
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+us[][:, 3] .- us[][:, 1]
 
 # training
 grads = Flux.gradient(ϕ) do m
@@ -708,5 +518,6 @@ u_ad = W' * sigmoid(V' * [x_n; 1])
 x_n_ = A_n * x_n + B_n * Λ * (u_n - u_ad)
 
 x_n_ - x_m
+
 
 
