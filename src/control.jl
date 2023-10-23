@@ -20,7 +20,7 @@ function joint_vel_pwm(joint_vel, dt)
     # 1 cycle = 1 step
     # the greater the number of cycles per steps, the slower the motor
     # the greater the joint_vel, the smaller the number of cycles per steps, the faster the motor
-    joint_vel = clamp(joint_vel, -3, 3)
+    joint_vel = clamp(joint_vel, -5, 5)
     cps = 1 / dt
     if joint_vel == 0
         return 10000000000000
@@ -65,7 +65,7 @@ LibSerialPort.open(portname1, baudrate) do sp1
     end
 end
 
-window_size = 1000
+window_size = 6000
 # state, [x, ẋ, y, ẏ, z, ż]
 is = Observable(zeros(window_size, 6))
 xs = @lift($is[:, 1])
@@ -169,14 +169,14 @@ C_s = [1.0 0 0 0 0 0
     0 0 1.0 0 0 0
     0 0 0 0 1.0 0]
 # Stage Observer control input
-D_s = [1.0 0 0
-    0 1.0 0
-    0 0 1.0]
+D_s = [0 0 0
+    0 0 0
+    0 0 0]
 
 dw = MvNormal(6, 1.0)          # Dynamics noise Distribution
 de = MvNormal(3, 1.0)          # Measurement noise Distribution
-d0 = MvNormal(x0, 1.0)   # Initial state Distribution
-kf = KalmanFilter(A_s, B_s, C_s, D_s, cov(dw), cov(de), d0)
+d0 = MvNormal(6, 1.0)   # Initial state Distribution
+kf = KalmanFilter(A_s, B_s, C_s, D_s, cov(dw), cov(de), d0, α=1.5)
 
 # Refernce state transition
 A_m = [1.0 0 0
@@ -270,12 +270,11 @@ LibSerialPort.open(portname1, baudrate) do sp1
                 x_n[][1, :] = A_n * is[][2, 1:2:end] + B_n * Λ * (ps[][2, :] - W' * sigmoid(V' * feat))
 
                 # adaptation
-                # using previous is, ps because they were update above
-                # using current x_n, es because they were calculated from previous is, ps
-                x_m = A_m * is[][1, 1:2:end] + B_m * us[][1, :]
-                e = x_n[][1, :] - x_m
+                # using previous us because they were update above
+                # using current is, x_n because they were calculated from previous is, ps
+                e = x_n[][1, :] - is[][1, 1:2:end]
                 K̇_x = -Γ_x * (is[][1, 1:2:end] * e' * P * B_n * Λ+ Γ_σ * K_x)
-                K̇_r = -Γ_r * (us[][1, :] * e' * P * B_n * Λ + Γ_σ * K_r)
+                K̇_r = -Γ_r * (us[][2, :] * e' * P * B_n * Λ + Γ_σ * K_r)
                 Ẇ = Γ_w * ((sigmoid(V' * feat) - ForwardDiff.jacobian(sigmoid, V' * feat) * (V' * feat)) * e' * P * B_n * Λ + Γ_σ * W)
                 V̇ = Γ_V * (feat * e' * P * B_n * Λ * W' * ForwardDiff.jacobian(sigmoid, V' * feat) + Γ_σ * V)
 
@@ -302,7 +301,7 @@ LibSerialPort.open(portname1, baudrate) do sp1
                 es[][1, 1:3:end] = (es[][1, 2:3:end] .- es[][2, 2:3:end]) / dt
 
                 # reference control (pi controller)
-                kp, ki, kd = 1000, 10, 0.0
+                kp, ki, kd = 1000, 0, 0.0
                 us[] = circshift(us[], (1, 0))
                 us[][1, :] = kp * es[][1, 2:3:end] + ki * es[][1, 3:3:end] + kd * es[][1, 1:3:end]
 
@@ -322,12 +321,13 @@ LibSerialPort.open(portname1, baudrate) do sp1
 
                     x_m_track = is[][1, 1:2:end]
                     x_m_track[1] += 0.008
+                    
                     # es[][:, 1:3:end] .= 0.0 # reset integral error
                 # x_m_track = [0.12, -0.01, 0.04]
                 else
                     # track point
-                    Γ_w = 1
-                    Γ_V = 1
+                    Γ_w = 0.001
+                    Γ_V = 0.001
 
                     ps[] = circshift(ps[], (1, 0))
                     ps[][1, :] = K_x' * x_n[][1, :] + K_r' * us[][2, :] + W' * sigmoid(V' * feat)
@@ -348,4 +348,9 @@ LibSerialPort.open(portname1, baudrate) do sp1
             write(sp2, "mr 10000000000000 10000000000000 10000000000000\n")
         end
     end
+end
+
+# stop
+LibSerialPort.open(portname2, baudrate) do sp2
+    write(sp2, "mr 100000000000000 100000000000000 100000000000000\n")
 end
