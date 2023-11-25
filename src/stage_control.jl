@@ -270,7 +270,7 @@ for (i, t) in enumerate(ts)
     # update x
     x_dot = (StepIndSys[:A] * StepIndState[:x][][:, 2] + realStepIndB * StepIndState[:u][][:, 2])
     x = StepIndState[:x][][:, 2] + dt * x_dot #+ rand(MvNormal(3, 0.4))
-    StepIndState[:x][][:, 1] = x #+ rand(MvNormal(3, 0.003))
+    StepIndState[:x][][:, 1] = x + rand(MvNormal(3, 0.003))
 
     # update B
     B_window = 50
@@ -300,7 +300,7 @@ for (i, t) in enumerate(ts)
     RotStageState[:t][][1] = t
 
     # update x
-    u = (StepIndState[:x][][:, 2] .- StepIndState[:x][][:, 1]) / dt
+    u = IndPixState[:u][][:, 1]
     x_dot = (IndPixSys[:A] * IndPixState[:x][][:, 1] + realIndPixB * u)
     IndPixState_x_gt = IndPixState[:x][][:, 1] + dt * x_dot #+ rand(MvNormal(3, 0.4))
     if t > 2.0 && t < 3.0
@@ -350,7 +350,7 @@ for (i, t) in enumerate(ts)
         u = eachcol(IndPixState[:u][][:, 2:B_window+1])
         IndPixSys[:B] = estimateB(u, y)
 
-        IndPixState[:em][][:, 1] = IndPixState[:x][][:, 1] .- (IndPixState[:x][][:, 2] + IndPixSys[:A] * IndPixState[:x][][:, 2] + IndPixSys[:B] * IndPixState[:u][][:, 2])
+        IndPixState[:em][][:, 1] = IndPixState[:x][][:, 1] .- (IndPixState[:x][][:, 2] +( IndPixSys[:A] * IndPixState[:x][][:, 2] + IndPixSys[:B] * IndPixState[:u][][:, 2]) .* dt)
     end
 
     ## Circle State
@@ -410,7 +410,7 @@ for (i, t) in enumerate(ts)
 
         # IndPix control
         try
-            IndPixState[:r][][:, 1] = IndPixState[:u][][:, 1] = (
+            difftottarget = (
                 pinv(ForwardDiff.jacobian(chipFK, [
                 IndPixState[:x][][1, 1] + CircleState[:x][][1, 1],
                 IndPixState[:x][][2, 1] + CircleState[:x][][2, 1],
@@ -418,6 +418,7 @@ for (i, t) in enumerate(ts)
                 CircleState[:x][][4, 1]
             ]))*RotStageState[:em][][:, 1]
             )[1:3]
+            IndPixState[:r][][:, 1] = IndPixState[:u][][:, 1] = pinv(IndPixSys[:B]) * difftottarget
 
         catch
             println("jacobian error")
@@ -426,8 +427,8 @@ for (i, t) in enumerate(ts)
 
 
         # StepInd control
-        target_ind = StepIndState[:x][][:, 1] .+ pinv(realIndPixB) * IndPixState[:u][][:, 1] * dt
-        StepIndState[:r][][:, 1] = -500.0 * (target_ind .- StepIndState[:x][][:, 1])
+        target_ind = StepIndState[:x][][:, 1] .+ IndPixState[:u][][:, 1] * dt
+        StepIndState[:r][][:, 1] = -100.0 * (target_ind .- StepIndState[:x][][:, 1])
         StepIndState[:u][][:, 1] = StepIndState[:r][][:, 1]
         StepIndState[:u][][:, 1], StepIndState[:em][][:, 1] = mrac(
             StepIndSys,
@@ -441,6 +442,7 @@ for (i, t) in enumerate(ts)
 end
 
 IndPixSys[:B]
+StepIndSys[:B]
 
 RotStageState[:x][][1, 1]
 IndPixState[:x][][1, 1]
