@@ -9,6 +9,7 @@ using LinearAlgebra
 using ForwardDiff
 using Flux
 using ControlSystemsBase
+using LsqFit
 GLMakie.activate!(inline=false)
 
 
@@ -33,19 +34,19 @@ cr_gt = 1.0
 ## endeffector pose
 start_pose_gt = [0.0, 0.0, 0.0] # x, y, theta
 
-f = Figure()
-ax = Axis(f[1, 1])
-ts = 0:0.01:4
-lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[1, :])
-lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[2, :])
-lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[3, :])
-display(f)
+# f = Figure()
+# ax = Axis(f[1, 1])
+# ts = 0:0.01:4
+# lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[1, :])
+# lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[2, :])
+# lines!(ax, ts, hcat(bootstrap_stepper_u.(ts)...)[3, :])
+# display(f)
 
 
 
 
 # Model
-window_size = 2000
+window_size = 5000
 ## Stepper-Inductance System
 #### Real System
 StepIndSys = Dict(
@@ -156,6 +157,13 @@ RotStageState = Dict(
     :t => Observable(zeros(window_size)),
     :em => Observable(zeros(3, window_size)), # error of model
 )
+CircleState = Dict(
+    :x => Observable(zeros(4, window_size)), # x, y, theta, cr
+    :t => Observable(zeros(window_size)),
+    :em => Observable(zeros(4, window_size)), # error of model
+)
+
+
 function chipFK(state)::Vector
     # x of rotation origin in pixel frame
     # y of rotation origin in pixel frame
@@ -167,13 +175,23 @@ function chipFK(state)::Vector
         theta]
 end
 
+function chipFKbatch(x, y, theta, cr)::AbstractMatrix
+    # x of rotation origin in pixel frame
+    # y of rotation origin in pixel frame
+    # theta of rotation stage in pixel frame
+    # cr of rotation stage in pixel frame
+    return reduce(hcat,
+        [x .+ cr .* cos.(theta),
+            y .+ cr .* sin.(theta),
+            theta])'
+end
+
 function estimateB(us, ys)
     dimensions = size(us[1])[1]
     u_ = reduce(vcat, [kron(u, I(dimensions) |> Matrix)' for u in us])
     B_ = reduce(vcat, [y for y in ys])
     return reshape(u_ \ B_, dimensions, dimensions)'
 end
-
 
 function estimateCircle(x, y)
     cA = [
@@ -221,20 +239,21 @@ StepIndState[:u][] .= 0.0
 StepIndState[:r][] .= 0.0
 StepIndState[:t][] .= 0.0
 StepIndState[:em][] .= 0.0
-ts = 0:dt:10
-realStepIndB = [1.0 1.0 0.0;
-    0.0 2.0 1.0;
-    0.3 0.0 1.0]
-realIndPixB = [1.0 0.0 0.3;
-    0.0 1.0 0.3;
-    0.2 0.1 1.0]
-# realStepIndB = [1.0 0.0 0.0;
-#     0.0 1.0 0.0;
+ts = -6:dt:20
+realStepIndB = [1.0 0.0 0.0;
+    0.0 1.0 0.0;
+    0.0 0.0 1.0]
+realIndPixB = [1.0 0.0 0.0;
+    0.0 1.0 0.0;
+    0.0 0.0 1.0]
+# realStepIndB = [1.0 1.0 0.0;
+#     0.0 2.0 1.0;
 #     0.0 0.0 1.0]
-# realIndPixB = [1.0 0.0 0.0;
-#     0.0 1.0 0.0;
-#     0.0 0.0 1.0]
-realRotStage = [1, 1, 0.2] # circle_x, circle_y, circle_radius
+# realIndPixB = [1.0 0.0 0.3;
+#     0.0 1.0 0.3;
+#     0.2 0.1 1.0]
+realRotStage = [1, 1, 0.0, 1.0] # circle_x, circle_y, circle_theta, circle_radius
+# CircleState[:x][][:, 1] = realRotStage
 for (i, t) in enumerate(ts)
     ## StepInd
 
@@ -251,13 +270,11 @@ for (i, t) in enumerate(ts)
     # update x
     x_dot = (StepIndSys[:A] * StepIndState[:x][][:, 2] + realStepIndB * StepIndState[:u][][:, 2])
     x = StepIndState[:x][][:, 2] + dt * x_dot #+ rand(MvNormal(3, 0.4))
-    StepIndKf(x, StepIndState[:r][][:, 2])
-    StepIndState[:x][][:, 1] = x + rand(MvNormal(3, 0.003))
-    #state(StepIndKf)
+    StepIndState[:x][][:, 1] = x #+ rand(MvNormal(3, 0.003))
 
     # update B
-    B_window = 1000
-    if t > 3.0
+    B_window = 50
+    if t > 3.0 || t < 0.0
         curr_rng = 1:min(i, B_window)
         prev_rng = 2:min(i + 1, B_window + 1)
         dts = (StepIndState[:t][][1:B_window] .- StepIndState[:t][][2:B_window+1])
@@ -268,41 +285,6 @@ for (i, t) in enumerate(ts)
         u = eachcol(StepIndState[:u][][:, 2:B_window+1])
         StepIndSys[:B] = estimateB(u, y)
         # StepIndState[:em][][:, 1] = StepIndState[:x][][:, 1] .- (StepIndState[:x][][:, 2] + StepIndSys[:A] * StepIndState[:x][][:, 2] + StepIndSys[:B] * StepIndState[:u][][:, 2])
-    end
-
-    ## IndPix
-    # shift all
-    IndPixState[:x][] = circshift(IndPixState[:x][], (0, 1))
-    IndPixState[:u][] = circshift(IndPixState[:u][], (0, 1))
-    IndPixState[:r][] = circshift(IndPixState[:r][], (0, 1))
-    IndPixState[:em][] = circshift(IndPixState[:em][], (0, 1))
-    IndPixState[:t][] = circshift(IndPixState[:t][], (1))
-
-    # update t
-    IndPixState[:t][][1] = t
-
-    # update x
-    u = (StepIndState[:x][][:, 2] .- StepIndState[:x][][:, 1]) / dt
-    x_dot = (IndPixSys[:A] * IndPixState[:x][][:, 2] + realIndPixB * u)
-    x = IndPixState[:x][][:, 2] + dt * x_dot #+ rand(MvNormal(3, 0.4))
-    IndPixKf(x, IndPixState[:r][][:, 2])
-    IndPixState[:x][][:, 1] = x# + rand(MvNormal(3, 0.003))  
-    #state(IndPixKf)
-
-    # update B
-    B_window = 1000
-    if t > 3.0
-        curr_rng = 1:min(i, B_window)
-        prev_rng = 2:min(i + 1, B_window + 1)
-        dts = (IndPixState[:t][][1:B_window] .- IndPixState[:t][][2:B_window+1])
-        dts = [dts'; dts'; dts']
-        y = eachcol((
-            (IndPixState[:x][][:, 1:B_window] .- IndPixState[:x][][:, 2:B_window+1]) .-
-            dts .* (IndPixSys[:A] * IndPixState[:x][][:, 2:B_window+1])) ./ dts)
-        u = eachcol(IndPixState[:u][][:, 2:B_window+1])
-        IndPixSys[:B] = estimateB(u, y)
-
-        IndPixState[:em][][:, 1] = IndPixState[:x][][:, 1] .- (IndPixState[:x][][:, 2] + StepIndSys[:A] * IndPixState[:x][][:, 2] + IndPixSys[:B] * IndPixState[:u][][:, 2])
     end
 
 
@@ -318,49 +300,135 @@ for (i, t) in enumerate(ts)
     RotStageState[:t][][1] = t
 
     # update x
+    u = (StepIndState[:x][][:, 2] .- StepIndState[:x][][:, 1]) / dt
+    x_dot = (IndPixSys[:A] * IndPixState[:x][][:, 1] + realIndPixB * u)
+    IndPixState_x_gt = IndPixState[:x][][:, 1] + dt * x_dot #+ rand(MvNormal(3, 0.4))
+    if t > 2.0 && t < 3.0
+        IndPixState_x_gt[1:2, 1] .= 0.0
+    end
+    # IndPixState[:x][][:, 1] = x + rand(MvNormal(3, 0.003))  
     chip_pose = chipFK([
-        IndPixState[:x][][1, 1] + realRotStage[1],
-        IndPixState[:x][][2, 1] + realRotStage[2],
-        IndPixState[:x][][3, 1],
-        realRotStage[3]])
-    RotStageState[:x][][:, 1] = chip_pose
+        IndPixState_x_gt[1, 1] + realRotStage[1],
+        IndPixState_x_gt[2, 1] + realRotStage[2],
+        IndPixState_x_gt[3, 1] + realRotStage[3],
+        realRotStage[4]])
+    RotStageState[:x][][:, 1] = chip_pose# + rand(MvNormal(3, 0.003))
 
+
+    ## IndPix
+    # shift all
+    IndPixState[:x][] = circshift(IndPixState[:x][], (0, 1))
+    IndPixState[:u][] = circshift(IndPixState[:u][], (0, 1))
+    IndPixState[:r][] = circshift(IndPixState[:r][], (0, 1))
+    IndPixState[:em][] = circshift(IndPixState[:em][], (0, 1))
+    IndPixState[:t][] = circshift(IndPixState[:t][], (1))
+
+    # update t
+    IndPixState[:t][][1] = t
+
+    # update x
+    if t > 3.0
+        IndPixState[:x][][:, 1] = [
+            RotStageState[:x][][1, 1] - CircleState[:x][][1, 1] - CircleState[:x][][4, 1] * cos(RotStageState[:x][][3, 1] + CircleState[:x][][3, 1]),
+            RotStageState[:x][][2, 1] - CircleState[:x][][2, 1] - CircleState[:x][][4, 1] * sin(RotStageState[:x][][3, 1] + CircleState[:x][][3, 1]),
+            RotStageState[:x][][3, 1] - CircleState[:x][][3, 1]
+        ]
+    else
+        IndPixState[:x][][:, 1] = IndPixState[:x][][:, 2]
+    end
+
+    # update B
+    B_window = 50
+    if t > 3.0
+        curr_rng = 1:min(i, B_window)
+        prev_rng = 2:min(i + 1, B_window + 1)
+        dts = (IndPixState[:t][][1:B_window] .- IndPixState[:t][][2:B_window+1])
+        dts = [dts'; dts'; dts']
+        y = eachcol((
+            (IndPixState[:x][][:, 1:B_window] .- IndPixState[:x][][:, 2:B_window+1]) .-
+            dts .* (IndPixSys[:A] * IndPixState[:x][][:, 2:B_window+1])) ./ dts)
+        u = eachcol(IndPixState[:u][][:, 2:B_window+1])
+        IndPixSys[:B] = estimateB(u, y)
+
+        IndPixState[:em][][:, 1] = IndPixState[:x][][:, 1] .- (IndPixState[:x][][:, 2] + IndPixSys[:A] * IndPixState[:x][][:, 2] + IndPixSys[:B] * IndPixState[:u][][:, 2])
+    end
+
+    ## Circle State
+    # shift all
+    CircleState[:x][] = circshift(CircleState[:x][], (0, 1))
+    CircleState[:em][] = circshift(CircleState[:em][], (0, 1))
+    CircleState[:t][] = circshift(CircleState[:t][], (1))
+
+    # update t
+    CircleState[:t][][1] = t
+
+    # update x
+    rotfilter = (RotStageState[:t][] .> 2.0) .& (RotStageState[:t][] .< 3.0)
+    rotfilter[1] = false
+    if sum(rotfilter) > 20
+        # Linear Regression
+        circlex, circley, circler = estimateCircle(
+            RotStageState[:x][][1, rotfilter] .- IndPixState[:x][][1, rotfilter],
+            RotStageState[:x][][2, rotfilter] .- IndPixState[:x][][2, rotfilter])
+        CircleState[:x][][:, 1] = [circlex, circley, 0.0, circler]
+
+        # Nonlinear Regression
+        model = function (t, p)
+            x, y, theta = t[1, :], t[2, :], t[3, :]
+            cx, cy, ctheta, cr = p
+            return vec(chipFKbatch(
+                x .+ cx,
+                y .+ cy,
+                theta .+ ctheta,
+                cr))
+        end
+        CircleState[:x][][:, 1] = curve_fit(model, IndPixState[:x][][:, rotfilter], vec(RotStageState[:x][][:, rotfilter]), CircleState[:x][][:, 1]).param
+    else
+        CircleState[:x][][:, 1] = CircleState[:x][][:, 2]
+    end
+    # CircleState[:x][][:, 1] = realRotStage
 
     ## Update Controls
     if t < 5.0
         # Calibration mode
         StepIndState[:r][][:, 1] = bootstrap_stepper_u(t)
-        if t > 3.0
-            StepIndState[:u][][:, 1], _ = mrac(
-                StepIndSys,
-                StepIndMRAC,
-                StepIndState[:r][][:, 1],
-                StepIndState[:r][][:, 2],
-                StepIndState[:x][][:, 1],
-                StepIndState[:x][][:, 2],
-                0.01)
-        end
+        StepIndState[:u][][:, 1], StepIndState[:em][][:, 1] = mrac(
+            StepIndSys,
+            StepIndMRAC,
+            StepIndState[:r][][:, 1],
+            StepIndState[:r][][:, 2],
+            StepIndState[:x][][:, 1],
+            StepIndState[:x][][:, 2],
+            0.01)
         IndPixState[:u][][:, 1] = StepIndState[:x][][:, 1] .- StepIndState[:x][][:, 2]
     else
         # IndPix control
-        rotfilter = (RotStageState[:t][] .> 2.0) #.& (RotStageState[:t][] .< 3.0)
-        circlex, circley, circler = estimateCircle(
-            RotStageState[:x][][1, rotfilter] .- IndPixState[:x][][1, rotfilter],
-            RotStageState[:x][][2, rotfilter] .- IndPixState[:x][][2, rotfilter])
-
         target_pose = [0.5, 0.5, 1.57]
         current_pose = RotStageState[:x][][:, 1]
 
         RotStageState[:em][][:, 1] = (target_pose - current_pose)
 
         # IndPix control
-        IndPixState[:r][][:, 1] = IndPixState[:u][][:, 1] = (
-            pinv(ForwardDiff.jacobian(chipFK, [current_pose; circler]))*RotStageState[:em][][:, 1]
-        )[1:3]
+        try
+            IndPixState[:r][][:, 1] = IndPixState[:u][][:, 1] = (
+                pinv(ForwardDiff.jacobian(chipFK, [
+                IndPixState[:x][][1, 1] + CircleState[:x][][1, 1],
+                IndPixState[:x][][2, 1] + CircleState[:x][][2, 1],
+                IndPixState[:x][][3, 1] + CircleState[:x][][3, 1],
+                CircleState[:x][][4, 1]
+            ]))*RotStageState[:em][][:, 1]
+            )[1:3]
+
+        catch
+            println("jacobian error")
+            break
+        end
+
 
         # StepInd control
-        target_ind = StepIndState[:x][][:, 1] .+ IndPixState[:u][][:, 1] * dt
-        StepIndState[:r][][:, 1] = -200.0 * (target_ind .- StepIndState[:x][][:, 1])
+        target_ind = StepIndState[:x][][:, 1] .+ pinv(realIndPixB) * IndPixState[:u][][:, 1] * dt
+        StepIndState[:r][][:, 1] = -500.0 * (target_ind .- StepIndState[:x][][:, 1])
+        StepIndState[:u][][:, 1] = StepIndState[:r][][:, 1]
         StepIndState[:u][][:, 1], StepIndState[:em][][:, 1] = mrac(
             StepIndSys,
             StepIndMRAC,
@@ -371,6 +439,13 @@ for (i, t) in enumerate(ts)
             dt)
     end
 end
+
+IndPixSys[:B]
+
+RotStageState[:x][][1, 1]
+IndPixState[:x][][1, 1]
+StepIndSys[:B]
+StepIndState[:r][][:, 1]
 
 f = Figure()
 
@@ -425,6 +500,12 @@ lines!(ax, RotStageState[:t][], RotStageState[:em][][2, :], label="y")
 lines!(ax, RotStageState[:t][], RotStageState[:em][][3, :], label="theta")
 axislegend(ax, merge=true, unique=true)
 
+ax = Axis(f[3, 3], title="CircleState[:x]")
+lines!(ax, CircleState[:t][], CircleState[:x][][1, :], label="x")
+lines!(ax, CircleState[:t][], CircleState[:x][][2, :], label="y")
+lines!(ax, CircleState[:t][], CircleState[:x][][3, :], label="r")
+axislegend(ax, merge=true, unique=true)
+
 ax = Axis(f[3, 4], aspect=DataAspect())
 # color rainbow
 scatter!(ax, RotStageState[:x][][1, :], RotStageState[:x][][2, :], color=RotStageState[:t][], colormap=:rainbow)
@@ -432,4 +513,3 @@ arrows!(ax, RotStageState[:x][][1, :], RotStageState[:x][][2, :],
     0.01 .* cos.(RotStageState[:x][][3, :]),
     0.01 .* sin.(RotStageState[:x][][3, :]), color=RotStageState[:t][], colormap=:rainbow)
 display(f)
-
