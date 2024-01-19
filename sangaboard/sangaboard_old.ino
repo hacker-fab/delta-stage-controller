@@ -95,6 +95,9 @@ Stepper* motors[n_motors];
 signed long current_pos[n_motors];
 long steps_remaining[n_motors];
 
+long duty_cycle[n_motors];
+long stepper_cycle;
+
 bool test_mode=false;
 
 // We'll use this input buffer for serial comms
@@ -122,15 +125,18 @@ void setup() {
   // initialise serial port
   Serial.begin(115200);
   while (! Serial )
-    delay(1);
+    delay(1000);
   //setup inductive sensor
   sensor1.init();
-  if (sensor1.single_channel_config(CHANNEL_0)) {
-        Serial.println("can't detect sensor!");
-        //while (1);
-        Serial.println("proceeding without inductive sensor");
+  if (sensor1.LDC1612_mutiple_channel_config()) {
+        Serial.println("can't detect sensor1!");
+        while (1);
     }
   Serial.println("end of the setup");
+  EACH_MOTOR{
+    duty_cycle[i] = 10000000000;
+    stepper_cycle = 0;
+  }
   
   // get the stepoper objects from the motor shield objects
   #if defined(SANGABOARDv2)
@@ -642,261 +648,312 @@ void print_light_sensor_intensity(){
 #endif // ADAFRUIT_ADS1115
 
 void loop() {
-  // wait for a serial command and read it
-  int received_bytes = Serial.readBytesUntil('\n',input_buffer,INPUT_BUFFER_LENGTH-1);
-  if(received_bytes > 0){
-    input_buffer[received_bytes] = '\0';
-    String command = String(input_buffer);
-//    Serial.println("Got command: <"+command+">");
+  if(Serial.available() > 0){
+    // wait for a serial command and read it
+    int received_bytes = Serial.readBytesUntil('\n',input_buffer,INPUT_BUFFER_LENGTH-1);
 
-    const char* single_axis_moves[3] = {"mrx ", "mry ", "mrz "};
-    int axis = command_prefix(command, single_axis_moves, 3);
-    if(axis >= 0){
-      int preceding_space = command.indexOf(' ',0);
-      if(preceding_space <= 0) Serial.println("Bad command.");
-      long n_steps = command.substring(preceding_space+1).toInt();
-      long displacement[n_motors];
-      EACH_MOTOR displacement[i]=0;
-      displacement[axis]=n_steps;
-      move_axes(displacement);
-      Serial.println("done");
-      return;
-    }
+    if(received_bytes > 0){
+        input_buffer[received_bytes] = '\0';
+        String command = String(input_buffer);
 
-    if(command.startsWith("list_modules")){//list available modules
-      #if defined ADAFRUIT_TSL2591
-      Serial.println(F("Light Sensor: TSL2591"));
-      #elif defined ADAFRUIT_ADS1115
-      Serial.println(F("Light Sensor: ADS1115"));
-      #endif
-      #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
-      Serial.print("Endstops:");
-      #ifdef ENDSTOPS_MIN
-        Serial.print(" min");
-      #endif
-      #ifdef ENDSTOPS_MAX
-        Serial.print(" max");
-      #endif
-      #ifdef ENDSTOPS_SOFT
-        Serial.print(" soft");
-      #endif
-      Serial.println();
-      #endif
-      Serial.println("--END--");
-      return;
-    }
 
-    if(command.startsWith("move_rel ") or command.startsWith("mr ")){ //relative move
-      int preceding_space = -1;
-      long displacement[n_motors];
-      EACH_MOTOR{ //read three integers and store in steps_remaining
-        preceding_space = command.indexOf(' ',preceding_space+1);
-        if(preceding_space<0){
-          Serial.println(F("Error: command is mr <int> <int> <int>"));
-          break;
+        if(command.startsWith("move_rel ") or command.startsWith("mr ")){ //relative move
+          int preceding_space = -1;
+          long displacement[n_motors];
+          EACH_MOTOR{ //read three integers and store in steps_remaining
+            preceding_space = command.indexOf(' ',preceding_space+1);
+            if(preceding_space<0){
+              Serial.println(F("Error: command is mr <int> <int> <int>"));
+              break;
+            }
+            duty_cycle[i] = command.substring(preceding_space+1).toInt();
+          }
         }
-        displacement[i] = command.substring(preceding_space+1).toInt();
-      }
-      move_axes(displacement);
-      Serial.println("done.");
-      return;
+        u32 result = 0;
+        sensor1.get_channel_result(CHANNEL_0, &result);
+        Serial.println(result);
+      // Serial.print(",");
+      // sensor1.get_channel_result(CHANNEL_1, &result);
+      // Serial.println(result);
     }
-
-    if(command.startsWith("release")){ //release steppers (de-energise coils)
-      EACH_MOTOR releaseMotor(i);
-      Serial.println("motors released");
-      return;
-    }
-    if(command.startsWith("p?") or command.startsWith("position?")){
-      print_position();
-      return;
-    }
-    if(command.startsWith("ramp_time ")){
-      int preceding_space = command.indexOf(' ',0);
-      if(preceding_space <= 0){
-        Serial.println("Bad command.");
-        return;
-      }
-      ramp_time = command.substring(preceding_space+1).toInt();
-      EEPROM.put(ramp_time_eeprom, ramp_time);
-      Serial.println("done.");
-      return;
-    }
-    if(command.startsWith("ramp_time?")){
-      Serial.print("ramp time ");
-      Serial.println(ramp_time);
-      return;
-    }
-    if(command.startsWith("min_step_delay ") || command.startsWith("dt ")){
-      int preceding_space = command.indexOf(' ',0);
-      if(preceding_space <= 0){
-        Serial.println("Bad command.");
-        return;
-      }
-      min_step_delay = command.substring(preceding_space+1).toInt();
-      EEPROM.put(min_step_delay_eeprom, min_step_delay);
-      Serial.println("done.");
-      return;
-    }
-    if(command.startsWith("min_step_delay?") || command.startsWith("dt?")){
-      Serial.print("minimum step delay ");
-      Serial.println(min_step_delay);
-      return;
-    }
-    if(command.startsWith("zero")){
-      EACH_MOTOR current_pos[i]=0;
-      Serial.println("position reset to 0 0 0");
-      EEPROM.put(0, current_pos);
-      return;
-    }
-    #ifdef LIGHT_SENSOR
-    if(command.startsWith("light_sensor_gain?")){
-      print_light_sensor_gain();
-      return;
-    }
-    if(command.startsWith("light_sensor_gain_values?")){
-      print_light_sensor_gain_values();
-      return;
-    }
-    if(command.startsWith("light_sensor_gain ")){
-      int preceding_space = command.indexOf(' ',0);
-      if(preceding_space <= 0){
-        Serial.println("Bad command.");
-        return;
-      }
-      set_light_sensor_gain(command.substring(preceding_space+1).toInt());
-      return;
-    }
-    if(command.startsWith("light_sensor_integration_time?")){
-      print_light_sensor_integration_time();
-      return;
-    }
-    if(command.startsWith("light_sensor_intensity?")){
-      print_light_sensor_intensity();
-      return;
-    }
-    #endif //LIGHT_SENSOR
-    #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
-    if(command.startsWith("endstops?")){
-       print_endstops_status();
-       return;
-    }
-    if(command.startsWith("home_min")){
-      if(command.indexOf(" ")==-1)
-        return home_min();
-      byte val=command.substring(9).toInt();
-      return home_min(val);
-    }
-    if(command.startsWith("home_max")){
-      if(command.indexOf(" ")==-1)
-        return home_max();
-      byte val=command.substring(9).toInt();
-      return home_max(val);
-    }
-    if(command.startsWith("max_p?")){
-      print_axes_max();
-      return;
-    }
-    if(command.startsWith("max ")){
-      int s2;
-      int s1=command.indexOf(" ",4);
-      axis_max[0]=command.substring(4,s1).toInt();
-      s2=command.indexOf(" ", s1+1);
-      axis_max[1]=command.substring(s1,s2).toInt();
-      axis_max[2]=command.substring(s2).toInt();
-      EEPROM.put(axis_max_eeprom, axis_max);
-      Serial.println("done");
-      return;
-    }
-    if(command.startsWith("test_mode")){
-      if(command.equals("test_mode on")){
-        test_mode=true;
-        Serial.println("test_mode on");
-      }else{
-        test_mode=false;
-        Serial.println("test_mode off");
-      }
-      return;
-    }
-    #endif //ENDSTOPS
-
-    if(command.startsWith("version")){
-      Serial.println(F(VER_STRING));
-      return;
-    }
-    if(command.startsWith("board")){
-      Serial.println(F(BOARD_STRING));
-      return;
-    }
-
-    //inductive reading
-    if(command.startsWith("i?")){
-      u32 result = 0;
-      sensor1.get_channel_result(CHANNEL_0, &result);
-      Serial.println(result);
-    }
-    
-    if(command.startsWith("help")){
-      Serial.println("");
-      Serial.print("Board: ");
-      Serial.println(F(BOARD_STRING));
-      Serial.println("");
-      Serial.println(F(VER_STRING));
-      
-      #if defined ADAFRUIT_TSL2591
-      Serial.println(F("Compiled with Adafruit TSL2591 support"));
-      #elif defined ADAFRUIT_ADS1115
-      Serial.println(F("Compiled with Adafruit ADS1115 support"));
-      #endif
-      #ifdef ENDSTOPS_MIN
-        Serial.println(F("Compiled with min endstops support"));
-      #endif
-      #ifdef ENDSTOPS_MAX
-        Serial.println(F("Compiled with max endstops support"));
-      #endif
-      
-
-      Serial.println("");
-      Serial.println(F("Commands (terminated by a newline character):"));
-      Serial.println(F("mrx <d>                        - relative move in x"));
-      Serial.println(F("mry <d>                        - relative move in y"));
-      Serial.println(F("mrz <d>                        - relative move in z"));
-      Serial.println(F("mr <d> <d> <d>                 - relative move in all 3 axes"));
-      Serial.println(F("release                        - de-energise all motors"));
-      Serial.println(F("p?                             - print position (3 space-separated integers"));
-      Serial.println(F("ramp_time <d>                  - set the time taken to accelerate/decelerate in us"));
-      Serial.println(F("min_step_delay <d>             - set the minimum time between steps in us."));
-      Serial.println(F("dt <d>                         - set the minimum time between steps in us."));
-      Serial.println(F("ramp_time?                     - get the time taken to accelerate/decelerate in us"));
-      Serial.println(F("min_step_delay?                - get the minimum time between steps in us."));
-      Serial.println(F("zero                           - set the current position to zero."));
-      #ifdef LIGHT_SENSOR
-      Serial.println(F("light_sensor_gain <d>          - set the gain of the light sensor"));
-      Serial.println(F("light_sensor_gain?             - get the gain of the light sensor"));
-      Serial.println(F("light_sensor_gain_values?      - get the allowable gain values of the light sensor"));
-      Serial.println(F("light_sensor_integration_time? - get the integration time in milliseconds"));
-      Serial.println(F("light_sensor_intensity?        - read the current value from the full spectrum diode"));
-      #endif //LIGHT_SENSOR
-
-      #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
-      Serial.println(F("endstops?                      - get triggered endstops in (1,0,-1) format for max, none, min"));
-      Serial.println(F("home_min <axes?>               - home given (00000zyx byte, e.g. 1 for x) or all axes to their min position"));
-      Serial.println(F("home_max <axes?>               - home given (00000zyx byte, e.g. 3 for x and y) or all axes to their max position"));
-      Serial.println(F("max_p?                         - return positions of max endstops"));
-      Serial.println(F("max <d> <d> <d>                - set maximum positions"));
-      #endif
-      Serial.println(F("test_mode <s>                  - set test_mode <on> <off>"));
-      Serial.println(F("version                        - get firmware version string"));
-      Serial.println("");
-      Serial.println("Input Key:");
-      Serial.println(F("<d>                            - a decimal integer."));
-      Serial.println("");
-      Serial.println("--END--");
-      return;
-    }
-    //Serial.println(F("Type 'help' for a list of commands."));
-  }else{
-    delay(1);
-    return;
   }
+  EACH_MOTOR{
+    if (duty_cycle[i] >= -1000000000 && duty_cycle[i] < 1000000000){
+      if (stepper_cycle % duty_cycle[i] == 0){
+        for (int j=0;j<5;j++){
+          stepMotor(i,duty_cycle[i] > 0 ? 1 : -1);
+          delayMicroseconds(750);
+        }
+      }
+    } else{
+      releaseMotor(i);
+    }
+  }
+  stepper_cycle += 1;
+  delayMicroseconds(750);
+  return;
+  
+//   // wait for a serial command and read it
+//   int received_bytes = Serial.readBytesUntil('\n',input_buffer,INPUT_BUFFER_LENGTH-1);
+
+//   if(received_bytes > 0){
+//     input_buffer[received_bytes] = '\0';
+//     String command = String(input_buffer);
+// //    Serial.println("Got command: <"+command+">");
+
+//     const char* single_axis_moves[3] = {"mrx ", "mry ", "mrz "};
+//     int axis = command_prefix(command, single_axis_moves, 3);
+//     if(axis >= 0){
+//       int preceding_space = command.indexOf(' ',0);
+//       if(preceding_space <= 0) Serial.println("Bad command.");
+//       long n_steps = command.substring(preceding_space+1).toInt();
+//       long displacement[n_motors];
+//       EACH_MOTOR displacement[i]=0;
+//       displacement[axis]=n_steps;
+//       move_axes(displacement);
+//       Serial.println("done");
+//       return;
+//     }
+
+//     if(command.startsWith("list_modules")){//list available modules
+//       #if defined ADAFRUIT_TSL2591
+//       Serial.println(F("Light Sensor: TSL2591"));
+//       #elif defined ADAFRUIT_ADS1115
+//       Serial.println(F("Light Sensor: ADS1115"));
+//       #endif
+//       #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
+//       Serial.print("Endstops:");
+//       #ifdef ENDSTOPS_MIN
+//         Serial.print(" min");
+//       #endif
+//       #ifdef ENDSTOPS_MAX
+//         Serial.print(" max");
+//       #endif
+//       #ifdef ENDSTOPS_SOFT
+//         Serial.print(" soft");
+//       #endif
+//       Serial.println();
+//       #endif
+//       Serial.println("--END--");
+//       return;
+//     }
+
+//     if(command.startsWith("move_rel ") or command.startsWith("mr ")){ //relative move
+//       int preceding_space = -1;
+//       long displacement[n_motors];
+//       EACH_MOTOR{ //read three integers and store in steps_remaining
+//         preceding_space = command.indexOf(' ',preceding_space+1);
+//         if(preceding_space<0){
+//           Serial.println(F("Error: command is mr <int> <int> <int>"));
+//           break;
+//         }
+//         displacement[i] = command.substring(preceding_space+1).toInt();
+//       }
+//       move_axes(displacement);
+//       Serial.println("done.");
+//       return;
+//     }
+
+//     if(command.startsWith("release")){ //release steppers (de-energise coils)
+//       EACH_MOTOR releaseMotor(i);
+//       Serial.println("motors released");
+//       return;
+//     }
+//     if(command.startsWith("p?") or command.startsWith("position?")){
+//       print_position();
+//       return;
+//     }
+//     if(command.startsWith("ramp_time ")){
+//       int preceding_space = command.indexOf(' ',0);
+//       if(preceding_space <= 0){
+//         Serial.println("Bad command.");
+//         return;
+//       }
+//       ramp_time = command.substring(preceding_space+1).toInt();
+//       EEPROM.put(ramp_time_eeprom, ramp_time);
+//       Serial.println("done.");
+//       return;
+//     }
+//     if(command.startsWith("ramp_time?")){
+//       Serial.print("ramp time ");
+//       Serial.println(ramp_time);
+//       return;
+//     }
+//     if(command.startsWith("min_step_delay ") || command.startsWith("dt ")){
+//       int preceding_space = command.indexOf(' ',0);
+//       if(preceding_space <= 0){
+//         Serial.println("Bad command.");
+//         return;
+//       }
+//       min_step_delay = command.substring(preceding_space+1).toInt();
+//       EEPROM.put(min_step_delay_eeprom, min_step_delay);
+//       Serial.println("done.");
+//       return;
+//     }
+//     if(command.startsWith("min_step_delay?") || command.startsWith("dt?")){
+//       Serial.print("minimum step delay ");
+//       Serial.println(min_step_delay);
+//       return;
+//     }
+//     if(command.startsWith("zero")){
+//       EACH_MOTOR current_pos[i]=0;
+//       Serial.println("position reset to 0 0 0");
+//       EEPROM.put(0, current_pos);
+//       return;
+//     }
+//     #ifdef LIGHT_SENSOR
+//     if(command.startsWith("light_sensor_gain?")){
+//       print_light_sensor_gain();
+//       return;
+//     }
+//     if(command.startsWith("light_sensor_gain_values?")){
+//       print_light_sensor_gain_values();
+//       return;
+//     }
+//     if(command.startsWith("light_sensor_gain ")){
+//       int preceding_space = command.indexOf(' ',0);
+//       if(preceding_space <= 0){
+//         Serial.println("Bad command.");
+//         return;
+//       }
+//       set_light_sensor_gain(command.substring(preceding_space+1).toInt());
+//       return;
+//     }
+//     if(command.startsWith("light_sensor_integration_time?")){
+//       print_light_sensor_integration_time();
+//       return;
+//     }
+//     if(command.startsWith("light_sensor_intensity?")){
+//       print_light_sensor_intensity();
+//       return;
+//     }
+//     #endif //LIGHT_SENSOR
+//     #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
+//     if(command.startsWith("endstops?")){
+//        print_endstops_status();
+//        return;
+//     }
+//     if(command.startsWith("home_min")){
+//       if(command.indexOf(" ")==-1)
+//         return home_min();
+//       byte val=command.substring(9).toInt();
+//       return home_min(val);
+//     }
+//     if(command.startsWith("home_max")){
+//       if(command.indexOf(" ")==-1)
+//         return home_max();
+//       byte val=command.substring(9).toInt();
+//       return home_max(val);
+//     }
+//     if(command.startsWith("max_p?")){
+//       print_axes_max();
+//       return;
+//     }
+//     if(command.startsWith("max ")){
+//       int s2;
+//       int s1=command.indexOf(" ",4);
+//       axis_max[0]=command.substring(4,s1).toInt();
+//       s2=command.indexOf(" ", s1+1);
+//       axis_max[1]=command.substring(s1,s2).toInt();
+//       axis_max[2]=command.substring(s2).toInt();
+//       EEPROM.put(axis_max_eeprom, axis_max);
+//       Serial.println("done");
+//       return;
+//     }
+//     if(command.startsWith("test_mode")){
+//       if(command.equals("test_mode on")){
+//         test_mode=true;
+//         Serial.println("test_mode on");
+//       }else{
+//         test_mode=false;
+//         Serial.println("test_mode off");
+//       }
+//       return;
+//     }
+//     #endif //ENDSTOPS
+
+//     if(command.startsWith("version")){
+//       Serial.println(F(VER_STRING));
+//       return;
+//     }
+//     if(command.startsWith("board")){
+//       Serial.println(F(BOARD_STRING));
+//       return;
+//     }
+
+//     //inductive reading
+//     if(command.startsWith("i0?")){
+//       u32 result = 0;
+//       sensor1.get_channel_result(CHANNEL_0, &result);
+//       Serial.println(result);
+//     }
+    
+//     if(command.startsWith("i1?")){
+//       u32 result = 0;
+//       sensor1.get_channel_result(CHANNEL_1, &result);
+//       Serial.println(result);
+//     }
+    
+//     if(command.startsWith("help")){
+//       Serial.println("");
+//       Serial.print("Board: ");
+//       Serial.println(F(BOARD_STRING));
+//       Serial.println("");
+//       Serial.println(F(VER_STRING));
+      
+//       #if defined ADAFRUIT_TSL2591
+//       Serial.println(F("Compiled with Adafruit TSL2591 support"));
+//       #elif defined ADAFRUIT_ADS1115
+//       Serial.println(F("Compiled with Adafruit ADS1115 support"));
+//       #endif
+//       #ifdef ENDSTOPS_MIN
+//         Serial.println(F("Compiled with min endstops support"));
+//       #endif
+//       #ifdef ENDSTOPS_MAX
+//         Serial.println(F("Compiled with max endstops support"));
+//       #endif
+      
+
+//       Serial.println("");
+//       Serial.println(F("Commands (terminated by a newline character):"));
+//       Serial.println(F("mrx <d>                        - relative move in x"));
+//       Serial.println(F("mry <d>                        - relative move in y"));
+//       Serial.println(F("mrz <d>                        - relative move in z"));
+//       Serial.println(F("mr <d> <d> <d>                 - relative move in all 3 axes"));
+//       Serial.println(F("release                        - de-energise all motors"));
+//       Serial.println(F("p?                             - print position (3 space-separated integers"));
+//       Serial.println(F("ramp_time <d>                  - set the time taken to accelerate/decelerate in us"));
+//       Serial.println(F("min_step_delay <d>             - set the minimum time between steps in us."));
+//       Serial.println(F("dt <d>                         - set the minimum time between steps in us."));
+//       Serial.println(F("ramp_time?                     - get the time taken to accelerate/decelerate in us"));
+//       Serial.println(F("min_step_delay?                - get the minimum time between steps in us."));
+//       Serial.println(F("zero                           - set the current position to zero."));
+//       #ifdef LIGHT_SENSOR
+//       Serial.println(F("light_sensor_gain <d>          - set the gain of the light sensor"));
+//       Serial.println(F("light_sensor_gain?             - get the gain of the light sensor"));
+//       Serial.println(F("light_sensor_gain_values?      - get the allowable gain values of the light sensor"));
+//       Serial.println(F("light_sensor_integration_time? - get the integration time in milliseconds"));
+//       Serial.println(F("light_sensor_intensity?        - read the current value from the full spectrum diode"));
+//       #endif //LIGHT_SENSOR
+
+//       #if defined(ENDSTOPS_MIN)||defined(ENDSTOPS_MAX)
+//       Serial.println(F("endstops?                      - get triggered endstops in (1,0,-1) format for max, none, min"));
+//       Serial.println(F("home_min <axes?>               - home given (00000zyx byte, e.g. 1 for x) or all axes to their min position"));
+//       Serial.println(F("home_max <axes?>               - home given (00000zyx byte, e.g. 3 for x and y) or all axes to their max position"));
+//       Serial.println(F("max_p?                         - return positions of max endstops"));
+//       Serial.println(F("max <d> <d> <d>                - set maximum positions"));
+//       #endif
+//       Serial.println(F("test_mode <s>                  - set test_mode <on> <off>"));
+//       Serial.println(F("version                        - get firmware version string"));
+//       Serial.println("");
+//       Serial.println("Input Key:");
+//       Serial.println(F("<d>                            - a decimal integer."));
+//       Serial.println("");
+//       Serial.println("--END--");
+//       return;
+//     }
+//     //Serial.println(F("Type 'help' for a list of commands."));
+//   }else{
+//     delay(1);
+//     return;
 }
